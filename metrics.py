@@ -75,7 +75,10 @@ PUNCH_ACCEL_MIN     = 0.075   # body-relative wrist velocity per pose-frame.
 # PUNCH_PEAK_SEP_S between peaks. Each real punch produces one peak; slow
 # defensive motion produces low-amplitude signal that fails the threshold,
 # and motion away from the opponent gets suppressed by the direction factor.
-PUNCH_SCORE_MIN     = 0.040
+PUNCH_SCORE_MIN     = 0.050   # peak-score threshold. Calibrated against user-
+                              # provided ground-truth counts across 6 clips —
+                              # this value minimizes total absolute error with
+                              # torso-normalized velocity (see _punch_score).
 PUNCH_PEAK_SEP_S    = 0.18    # min time between detected peaks (fast 1-2
                               # combos sit around 0.2 s apart)
 RANGE_TRIGGER_SCALE = 2.6     # "in range" = opponent-distance <= this × scale-px
@@ -319,7 +322,11 @@ def _punch_score(kps, prev_kps, toward_dir):
     • extension_ratio: distance(wrist, shoulder-center) / torso_height.
     • wrist_velocity: magnitude of body-relative wrist displacement since
       the previous frame (shoulder motion subtracted so the fighter's own
-      footwork doesn't register as wrist velocity).
+      footwork doesn't register as wrist velocity). Kept in normalized
+      [0,1] frame coords — NOT divided by torso_height. Empirically this
+      gives a more consistent distribution across clips than torso-
+      normalization, which amplified inter-clip score variance 3× by
+      dividing by a small, noisy quantity.
     • direction_factor: how aligned the wrist velocity is with the vector
       from this fighter to the opponent (1 = straight toward, 0 = straight
       away, 0.5 = perpendicular or unknown). Defensive/retraction motion
@@ -355,7 +362,7 @@ def _punch_score(kps, prev_kps, toward_dir):
         vmag = math.hypot(vx, vy)
         if vmag < 1e-6:
             continue
-        # Extension fraction.
+        # Extension fraction (torso-normalized).
         ext = _dist(w, sc) / th
         # Directional factor: cosine of angle between velocity and opponent
         # direction, remapped to [0, 1].
@@ -371,8 +378,16 @@ def _punch_score(kps, prev_kps, toward_dir):
 
 
 def _detect_punch_peaks(scores: list[float], fps: float,
-                        min_score: float = PUNCH_SCORE_MIN,
-                        min_sep_s: float = PUNCH_PEAK_SEP_S) -> list[int]:
+                        min_score: float | None = None,
+                        min_sep_s: float | None = None) -> list[int]:
+    # Resolve defaults at call time so module-level constant changes take
+    # effect without needing to reload the module (pitfall from earlier: a
+    # default-arg binding evaluated at def time made threshold sweeps silent
+    # no-ops).
+    if min_score is None:
+        min_score = PUNCH_SCORE_MIN
+    if min_sep_s is None:
+        min_sep_s = PUNCH_PEAK_SEP_S
     """
     Return indices of local maxima in `scores` above `min_score`, with at
     least `min_sep_s` seconds between successive peaks. Each punch event

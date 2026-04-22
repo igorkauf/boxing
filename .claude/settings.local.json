@@ -18,7 +18,10 @@
       "Bash(gh --version)",
       "Bash(gh auth *)",
       "Bash(chmod +x test_harness.py)",
-      "Bash(./venv/bin/python test_harness.py --out snapshots/v0.2-peak-punches.csv)"
+      "Bash(./venv/bin/python test_harness.py --out snapshots/v0.2-peak-punches.csv)",
+      "Bash(./venv/bin/python _sweep_punch_threshold.py)",
+      "Bash(./venv/bin/python _inspect_scores.py)",
+      "Bash(./venv/bin/python test_harness.py --out snapshots/v0.3-peak-0.05.csv --diff snapshots/v0.2-peak-punches.csv)"
     ]
   }
 }
