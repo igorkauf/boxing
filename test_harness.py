@@ -36,7 +36,9 @@ from pathlib import Path
 BASE = Path(__file__).parent
 sys.path.insert(0, str(BASE))
 
-import metrics  # noqa: E402
+import metrics          # noqa: E402
+import arena_detector   # noqa: E402
+import json as _json    # noqa: E402
 
 
 METRIC_FIELDS = [
@@ -78,10 +80,45 @@ def scan_sessions(sessions_dir: Path):
             yield d, meta
 
 
-def run(sessions_dir: Path):
+def _rerun_arena_for_session(sess_dir: Path, meta: dict) -> bool:
+    """Re-run arena_detector.detect_and_save against the cached video,
+    overwriting the session's arena.json. Picks up motion-comp changes."""
+    enriched_path = sess_dir / "sam2_enriched.json"
+    if not enriched_path.exists():
+        return False
+    try:
+        enriched = _json.loads(enriched_path.read_text())
+    except _json.JSONDecodeError:
+        return False
+    # Resolve compressed video (may be a symlink into cache/).
+    for candidate in ("lab_compressed.mp4", "compressed.mp4"):
+        p = sess_dir / candidate
+        if p.exists():
+            vpath = str(p)
+            break
+    else:
+        ext = meta.get("video_ext", ".mp4")
+        p = sess_dir / f"original{ext}"
+        if not p.exists():
+            return False
+        vpath = str(p)
+    arena = arena_detector.detect_and_save(vpath, enriched, sess_dir / "arena.json")
+    return bool(arena.get("ok"))
+
+
+def run(sessions_dir: Path, rerun_arena: bool = False):
     """Compute metrics for every session. Returns list of CSV rows."""
     rows = []
     for sess_dir, meta in scan_sessions(sessions_dir):
+        if rerun_arena:
+            t_arena = time.perf_counter()
+            ok = _rerun_arena_for_session(sess_dir, meta)
+            arena_ms = (time.perf_counter() - t_arena) * 1000.0
+            if not ok:
+                print(f"[skip] {sess_dir.name:12}  arena rerun failed")
+                continue
+        else:
+            arena_ms = 0.0
         t0 = time.perf_counter()
         result = metrics.compute(sess_dir)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -102,6 +139,8 @@ def run(sessions_dir: Path):
             "compute_ms":    round(elapsed_ms, 1),
         })
 
+        timing = (f"arena {arena_ms:5.0f}ms + metrics {elapsed_ms:5.0f}ms"
+                  if rerun_arena else f"{elapsed_ms:6.0f}ms")
         print(f"[ok]   {sess_dir.name:12}  "
               f"punches {result['my_punches']:3}/{result['op_punches']:3}  "
               f"ring {result['my_ring']:3}/{result['op_ring']:3}  "
@@ -109,7 +148,7 @@ def run(sessions_dir: Path):
               f"mov {result['my_movement']:3}/{result['op_movement']:3}  "
               f"vol {result['my_volume']:3}/{result['op_volume']:3}  "
               f"tier {result['tier']:6}  "
-              f"{elapsed_ms:6.0f}ms  "
+              f"{timing}  "
               f"{meta.get('filename', '')}")
     return rows
 
@@ -171,10 +210,14 @@ def main():
                     help="Directory containing processed sessions")
     ap.add_argument("--diff", default=None,
                     help="Baseline CSV to diff current run against")
+    ap.add_argument("--rerun-arena", action="store_true",
+                    help="Force re-run of arena_detector.detect_and_save before "
+                         "metrics.compute. Picks up motion-comp algorithm "
+                         "changes. Slow (~1 min per clip).")
     args = ap.parse_args()
 
     sessions_dir = BASE / args.sessions_dir
-    rows = run(sessions_dir)
+    rows = run(sessions_dir, rerun_arena=args.rerun_arena)
     if not rows:
         print("\nNo sessions to process — run the Lab pipeline first.")
         return 1

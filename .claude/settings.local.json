@@ -23,7 +23,8 @@
       "Bash(./venv/bin/python _inspect_scores.py)",
       "Bash(./venv/bin/python test_harness.py --out snapshots/v0.3-peak-0.05.csv --diff snapshots/v0.2-peak-punches.csv)",
       "Bash(./venv/bin/python test_harness.py --out snapshots/v0.4-split-metrics.csv --diff snapshots/v0.3-peak-0.05.csv)",
-      "Bash(./venv/bin/python test_harness.py --out snapshots/v0.5-bundle-adj.csv --diff snapshots/v0.4-split-metrics.csv)"
+      "Bash(./venv/bin/python test_harness.py --out snapshots/v0.5-bundle-adj.csv --diff snapshots/v0.4-split-metrics.csv)",
+      "Bash(./venv/bin/python test_harness.py --rerun-arena --out snapshots/v0.5-bundle-adj-rerun.csv --diff snapshots/v0.4-split-metrics.csv)"
     ]
   }
 }
