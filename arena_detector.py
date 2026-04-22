@@ -55,7 +55,12 @@ KLT_FB_MAX_ERR   = 1.5    # forward-backward projection error threshold (px)
 
 MIN_MATCHES     = 12
 MIN_INLIERS     = 8
-SCALE_LO_HI     = (0.85, 1.20)   # uniform-scale sanity bounds per frame pair
+# SCALE_LO_HI retained as a historical note: the former partial-affine fit
+# had a scale DOF whose bias compounded multiplicatively. The new rigid fit
+# (translation + rotation only) has no scale, so this isn't applicable.
+SCALE_LO_HI     = (0.85, 1.20)
+MAX_TRANSLATION_PER_FRAME = 60   # pixels — rejects LK-failure outliers
+MAX_ROTATION_PER_FRAME    = 8.0  # degrees — cameras don't spin that fast
 DILATION_FRAC   = 0.35    # dilation radius per foot point, in median-scale units
 KP_CONF_MIN     = 0.40    # min keypoint confidence for torso/shoulder measures
 BBOX_H_W_MIN    = 0.70    # skip bbox-bottom foot-point when bbox is horizontal
@@ -106,19 +111,25 @@ class _KLTMotion:
             prev_pts, cur_pts = self._lk_track(cur_gray, cur_mask)
             if (prev_pts is not None
                     and len(prev_pts) >= MIN_MATCHES):
-                est, inliers = cv2.estimateAffinePartial2D(
+                # Rigid (3-DOF) fit — no scale parameter, so scale can't
+                # drift. Translation and rotation still fit with RANSAC +
+                # Kabsch refinement.
+                M_est = _rigid_ransac(
                     prev_pts.reshape(-1, 2),
                     cur_pts.reshape(-1, 2),
-                    method=cv2.RANSAC,
-                    ransacReprojThreshold=3.0,
-                    maxIters=2000,
+                    threshold=3.0,
+                    n_iters=200,
                 )
-                if est is not None and inliers is not None and int(inliers.sum()) >= MIN_INLIERS:
-                    a, b, _ = est[0]
-                    scale = float(math.hypot(a, b))
-                    if SCALE_LO_HI[0] <= scale <= SCALE_LO_HI[1]:
-                        M = est.astype(np.float64)
-                # Carry forward only the tracked-forward positions for next step.
+                if M_est is not None:
+                    # Sanity: cap per-frame translation and rotation at
+                    # physically plausible limits. Anything beyond this is
+                    # almost certainly a tracking failure, not real motion.
+                    tx, ty = float(M_est[0, 2]), float(M_est[1, 2])
+                    rot = math.degrees(math.atan2(M_est[1, 0], M_est[0, 0]))
+                    if (abs(tx) < MAX_TRANSLATION_PER_FRAME
+                            and abs(ty) < MAX_TRANSLATION_PER_FRAME
+                            and abs(rot) < MAX_ROTATION_PER_FRAME):
+                        M = M_est
                 cur_tracked = cur_pts
             else:
                 cur_tracked = None
@@ -208,6 +219,113 @@ def _apply(M, pts):
 
 def _identity():
     return np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64)
+
+
+# ── Rigid-transform fit (custom — no OpenCV equivalent) ──────────────────────
+# Why not cv2.estimateAffinePartial2D? That fits a 4-DOF partial-affine (scale,
+# rotation, tx, ty), and the scale DOF has small RANSAC bias every frame that
+# compounds multiplicatively over thousands of frames to produce visible
+# "phantom zoom" on long clips. Boxing cameras don't actually zoom, so we fit
+# a pure rigid transform (3 DOF: tx, ty, rotation) where scale simply doesn't
+# exist as an estimated quantity.
+
+def _fit_rigid_2pt(s1: np.ndarray, s2: np.ndarray,
+                   d1: np.ndarray, d2: np.ndarray):
+    """Analytical rigid transform from exactly 2 source→destination pairs.
+    Returns 2×3 or None on degenerate input."""
+    s_vec = s2 - s1
+    d_vec = d2 - d1
+    s_len = float(np.linalg.norm(s_vec))
+    d_len = float(np.linalg.norm(d_vec))
+    if s_len < 1e-6 or d_len < 1e-6:
+        return None
+    # Angle between source and destination edge vectors.
+    theta = math.atan2(d_vec[1], d_vec[0]) - math.atan2(s_vec[1], s_vec[0])
+    c, s = math.cos(theta), math.sin(theta)
+    # Rotation about origin, then translation so s1 → d1.
+    R = np.array([[c, -s], [s, c]], dtype=np.float64)
+    t = d1 - R @ s1
+    return np.array([[c, -s, t[0]],
+                     [s,  c, t[1]]], dtype=np.float64)
+
+
+def _kabsch_rigid(src: np.ndarray, dst: np.ndarray):
+    """Optimal rigid transform by Kabsch algorithm (SVD). Assumes matched
+    pairs src[i] ↔ dst[i]. Returns 2×3 or None for degenerate input."""
+    if len(src) < 2 or len(dst) != len(src):
+        return None
+    src = np.asarray(src, dtype=np.float64)
+    dst = np.asarray(dst, dtype=np.float64)
+    s_mean = src.mean(axis=0)
+    d_mean = dst.mean(axis=0)
+    s_c = src - s_mean
+    d_c = dst - d_mean
+    H = s_c.T @ d_c
+    try:
+        U, _, Vt = np.linalg.svd(H)
+    except np.linalg.LinAlgError:
+        return None
+    # Correct reflection if determinant is negative (flip the last column of V).
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    if d < 0:
+        Vt = Vt.copy()
+        Vt[-1, :] *= -1
+    R = Vt.T @ U.T
+    t = d_mean - R @ s_mean
+    return np.array([[R[0, 0], R[0, 1], t[0]],
+                     [R[1, 0], R[1, 1], t[1]]], dtype=np.float64)
+
+
+def _rigid_ransac(src: np.ndarray, dst: np.ndarray,
+                  threshold: float = 3.0,
+                  n_iters: int = 200,
+                  min_inliers: int = MIN_INLIERS):
+    """
+    Robust rigid-transform fit: RANSAC with 2-point samples, then refine
+    the best inlier set analytically via Kabsch. 2-point samples are
+    cheap and deterministic, so 200 iterations is plenty — at 60-90%
+    inlier rate the probability of missing an all-inlier pair is < 10⁻⁴⁰.
+
+    Returns 2×3 affine matrix, or None if no strong consensus.
+    """
+    n = len(src)
+    if n < min_inliers:
+        return None
+    src = np.asarray(src, dtype=np.float64)
+    dst = np.asarray(dst, dtype=np.float64)
+    if src.shape != dst.shape:
+        return None
+
+    best_M = None
+    best_count = 0
+    threshold_sq = threshold * threshold
+    rng = np.random.default_rng(seed=0xB0D1)   # deterministic for reproducibility
+
+    for _ in range(n_iters):
+        idx = rng.choice(n, 2, replace=False)
+        M = _fit_rigid_2pt(src[idx[0]], src[idx[1]],
+                           dst[idx[0]], dst[idx[1]])
+        if M is None:
+            continue
+        # Forward-project src, count inliers by squared reprojection error.
+        projected = src @ M[:, :2].T + M[:, 2]
+        err_sq = np.sum((projected - dst) ** 2, axis=1)
+        count = int((err_sq < threshold_sq).sum())
+        if count > best_count:
+            best_count = count
+            best_M = M
+
+    if best_M is None or best_count < min_inliers:
+        return None
+
+    # Refine on full inlier set (Kabsch).
+    projected = src @ best_M[:, :2].T + best_M[:, 2]
+    err_sq = np.sum((projected - dst) ** 2, axis=1)
+    inliers = err_sq < threshold_sq
+    if inliers.sum() < min_inliers:
+        return best_M
+    refined = _kabsch_rigid(src[inliers], dst[inliers])
+    return refined if refined is not None else best_M
 
 
 
