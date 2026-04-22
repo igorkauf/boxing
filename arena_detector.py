@@ -117,13 +117,7 @@ class _KLTMotion:
                     a, b, _ = est[0]
                     scale = float(math.hypot(a, b))
                     if SCALE_LO_HI[0] <= scale <= SCALE_LO_HI[1]:
-                        # Strip the scale component — keep translation + rotation
-                        # only. Cameras in boxing footage don't actually zoom,
-                        # and a small per-frame scale bias (RANSAC noise) would
-                        # compound multiplicatively over 2700 frames to give a
-                        # 3-4× phantom zoom by clip end. Rigid-transform fit is
-                        # drift-free along the scale axis.
-                        M = _strip_scale(est).astype(np.float64)
+                        M = est.astype(np.float64)
                 # Carry forward only the tracked-forward positions for next step.
                 cur_tracked = cur_pts
             else:
@@ -192,35 +186,6 @@ class _KLTMotion:
         )
         return pts if pts is not None else np.zeros((0, 1, 2), dtype=np.float32)
 
-    @staticmethod
-    def _estimate_affine(src_pts: np.ndarray, dst_pts: np.ndarray):
-        """RANSAC partial-affine with scale sanity check. Returns 2×3 or None."""
-        if len(src_pts) < MIN_MATCHES or len(dst_pts) < MIN_MATCHES:
-            return None
-        M, inliers = cv2.estimateAffinePartial2D(
-            src_pts, dst_pts,
-            method=cv2.RANSAC, ransacReprojThreshold=3.0, maxIters=2000,
-        )
-        if M is None or inliers is None or int(inliers.sum()) < MIN_INLIERS:
-            return None
-        a, b, _ = M[0]
-        scale = float(math.hypot(a, b))
-        if not (SCALE_LO_HI[0] <= scale <= SCALE_LO_HI[1]):
-            return None
-        return M.astype(np.float64)
-
-    @staticmethod
-    def _detect(gray, mask, max_corners=KLT_MAX_FEATURES):
-        pts = cv2.goodFeaturesToTrack(
-            gray,
-            maxCorners=max_corners,
-            qualityLevel=KLT_QUALITY,
-            minDistance=KLT_MIN_DISTANCE,
-            mask=mask,
-            blockSize=3,
-        )
-        return pts if pts is not None else np.zeros((0, 1, 2), dtype=np.float32)
-
 
 def _compose(A, B):
     A3 = np.vstack([A, [0, 0, 1]])
@@ -245,22 +210,6 @@ def _identity():
     return np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64)
 
 
-def _strip_scale(M: np.ndarray) -> np.ndarray:
-    """
-    Normalize a 2×3 partial-affine matrix to scale=1, preserving rotation
-    and translation. For a partial-affine
-        M = [[s·cos θ, −s·sin θ, tx],
-             [s·sin θ,  s·cos θ, ty]]
-    we compute s = √(a² + b²) and divide the linear block by s to remove
-    the scale component, yielding a rigid (translation + rotation) transform.
-    """
-    a, b, tx = M[0]
-    c, d, ty = M[1]
-    s = math.hypot(a, b)
-    if s < 1e-9:
-        return M
-    return np.array([[a / s, b / s, tx],
-                     [c / s, d / s, ty]], dtype=np.float64)
 
 
 # ── Arena geometry ────────────────────────────────────────────────────────────
