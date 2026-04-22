@@ -26,7 +26,10 @@
       "Bash(./venv/bin/python test_harness.py --out snapshots/v0.5-bundle-adj.csv --diff snapshots/v0.4-split-metrics.csv)",
       "Bash(./venv/bin/python test_harness.py --rerun-arena --out snapshots/v0.5-bundle-adj-rerun.csv --diff snapshots/v0.4-split-metrics.csv)",
       "Bash(./venv/bin/python test_harness.py --rerun-arena --out snapshots/v0.6-direct-LK.csv --diff snapshots/v0.5-bundle-adj-rerun.csv)",
-      "Bash(./venv/bin/python test_harness.py --rerun-arena)"
+      "Bash(./venv/bin/python test_harness.py --rerun-arena)",
+      "Bash(./venv/bin/python _warp_diag.py)",
+      "Bash(./venv/bin/python test_harness.py --rerun-arena --out snapshots/v0.7-pairwise-revert.csv --diff snapshots/v0.5-bundle-adj-rerun.csv)",
+      "Bash(./venv/bin/python test_harness.py --rerun-arena --out snapshots/v0.8-rigid-transform.csv)"
     ]
   }
 }

@@ -1,0 +1,8 @@
+session,filename,duration_s,tier,tier_weight,my_visibility,op_visibility,my_ring,op_ring,my_aggression,op_aggression,my_movement,op_movement,my_volume,op_volume,my_defense,op_defense,my_guard,op_guard,my_punches,op_punches,compute_ms
+3f94fa52,yellow.mov,18,high,1.0,0.863,0.753,54,46,48,52,52,48,46,54,53,47,48,46,11,8,13.3
+4e282a22,Video by criztianlaurente15.mp4,17,high,1.0,0.899,0.968,45,55,53,47,50,50,54,46,47,53,57,33,20,23,13.3
+4e983f1f,box_green.mov,46,high,1.0,0.978,0.879,49,51,55,45,56,44,60,40,52,48,50,46,25,21,46.5
+58d96cfe,box_gigguys.mov,47,high,1.0,0.961,0.918,55,45,55,45,49,51,66,34,45,55,40,57,30,12,56.7
+cc7be917,Video by overtimeboxing.mp4,24,high,1.0,1.0,1.0,30,70,47,53,61,39,40,60,58,42,60,58,24,27,23.9
+e4e58936,box_test.mov,94,high,1.0,0.886,0.696,59,42,52,48,58,43,57,43,60,41,49,55,46,35,128.1
+f5433363,Video by yoshikillznina.mp4,11,high,1.0,1.0,1.0,53,47,74,26,62,38,52,48,57,43,27,41,2,2,32.4
