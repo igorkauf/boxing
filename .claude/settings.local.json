@@ -12,7 +12,11 @@
       "Bash(sam2_venv/bin/python3 _feet_floor_preview.py)",
       "Bash(venv/bin/python3 -c \"import ultralytics; print\\('ok'\\)\")",
       "Bash(venv/bin/python3 _feet_floor_preview.py)",
-      "Bash(venv/bin/python3 _arena_preview.py)"
+      "Bash(venv/bin/python3 _arena_preview.py)",
+      "Bash(git config *)",
+      "Bash(brew install *)",
+      "Bash(gh --version)",
+      "Bash(gh auth *)"
     ]
   }
 }

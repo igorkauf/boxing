@@ -61,15 +61,23 @@ ONE_EURO_D_CUTOFF   = 1.0
 # frames. A minimal "head + one shoulder + one arm" set clears this gate.
 MIN_CONFIDENT_KPS   = 5
 
-PUNCH_EXT_MIN       = 0.55    # wrist extension / torso (normalized) to count
+PUNCH_EXT_MIN       = 0.55    # wrist extension / torso (normalized). Used for
+                              # per-frame "arm active" flag feeding Aggression.
 PUNCH_ACCEL_MIN     = 0.075   # body-relative wrist velocity per pose-frame.
-                              # Raised from 0.06 to reject slow defensive /
-                              # guard arm movements that met the extension
-                              # threshold but weren't actual punches.
-PUNCH_DEDUP_GAP     = 4       # min "not-punching" frames between events to
-                              # count as separate punches. At 15fps pose that's
-                              # ~0.27 s — catches 1-2 combos but merges the
-                              # extension-hold-retract stretch of a single punch.
+                              # Used for per-frame activity flag (Aggression).
+
+# Peak-based total-count detector (used for `my_punches` / `op_punches`).
+# Replaces the earlier "sustained run of True flags" approach, which couldn't
+# tell the difference between a real punch and a slow block/guard adjustment
+# that happened to meet the extension threshold. The score combines:
+#   extension × wrist velocity × direction-toward-opponent
+# and counts local maxima of that score above PUNCH_SCORE_MIN with at least
+# PUNCH_PEAK_SEP_S between peaks. Each real punch produces one peak; slow
+# defensive motion produces low-amplitude signal that fails the threshold,
+# and motion away from the opponent gets suppressed by the direction factor.
+PUNCH_SCORE_MIN     = 0.040
+PUNCH_PEAK_SEP_S    = 0.18    # min time between detected peaks (fast 1-2
+                              # combos sit around 0.2 s apart)
 RANGE_TRIGGER_SCALE = 2.6     # "in range" = opponent-distance <= this × scale-px
 ADVANCE_EPS_SCALE   = 0.005   # min per-frame closing speed (in scales) to count
 
@@ -294,28 +302,105 @@ def _head_pos(kps):
     return _midpoint(_kp(kps, KP_EYE_L), _kp(kps, KP_EYE_R))
 
 
-def _count_punch_events(flags: list[bool], min_gap: int = PUNCH_DEDUP_GAP) -> int:
+def _bbox_center_norm(bbox):
+    """Midpoint of a normalized bbox, in normalized coords."""
+    if not bbox:
+        return None
+    return (0.5 * (bbox[0] + bbox[2]), 0.5 * (bbox[1] + bbox[3]))
+
+
+def _punch_score(kps, prev_kps, toward_dir):
     """
-    Collapse runs of consecutive True frames into punch EVENTS. A punch is
-    detected as True for several pose-frames (extension → hold → retract);
-    without this dedup the raw flag-sum over-counts every punch by 3-8×.
-    Two True runs separated by >= min_gap False frames count as two events.
+    Per-frame punch-likelihood score for one fighter.
+
+        score = max over both wrists of
+                  extension_ratio × wrist_velocity × direction_factor
+
+    • extension_ratio: distance(wrist, shoulder-center) / torso_height.
+    • wrist_velocity: magnitude of body-relative wrist displacement since
+      the previous frame (shoulder motion subtracted so the fighter's own
+      footwork doesn't register as wrist velocity).
+    • direction_factor: how aligned the wrist velocity is with the vector
+      from this fighter to the opponent (1 = straight toward, 0 = straight
+      away, 0.5 = perpendicular or unknown). Defensive/retraction motion
+      has direction_factor near 0, driving the score low.
+
+    Returns 0.0 when required keypoints are missing.
     """
-    count   = 0
-    in_run  = False
-    gap     = 0
-    for f in flags:
-        if f:
-            if not in_run:
-                count += 1
-                in_run = True
-            gap = 0
+    sc = _shoulder_center(kps)
+    th = _torso_height(kps)
+    if sc is None or th is None or th <= 1e-6:
+        return 0.0
+    prev_sc = _shoulder_center(prev_kps) if prev_kps else None
+
+    if toward_dir is not None:
+        tx, ty = toward_dir
+        tmag = math.hypot(tx, ty)
+    else:
+        tx, ty, tmag = 0.0, 0.0, 0.0
+
+    best = 0.0
+    for wi in (KP_WRIST_L, KP_WRIST_R):
+        w = _kp(kps, wi)
+        if w is None or prev_kps is None or prev_sc is None:
+            continue
+        pw = _kp(prev_kps, wi)
+        if pw is None:
+            continue
+        # Body-relative wrist displacement (subtract shoulder motion).
+        cur_rel  = (w[0]  - sc[0],      w[1]  - sc[1])
+        prev_rel = (pw[0] - prev_sc[0], pw[1] - prev_sc[1])
+        vx = cur_rel[0] - prev_rel[0]
+        vy = cur_rel[1] - prev_rel[1]
+        vmag = math.hypot(vx, vy)
+        if vmag < 1e-6:
+            continue
+        # Extension fraction.
+        ext = _dist(w, sc) / th
+        # Directional factor: cosine of angle between velocity and opponent
+        # direction, remapped to [0, 1].
+        if tmag < 1e-6:
+            dir_factor = 0.5
         else:
-            if in_run:
-                gap += 1
-                if gap >= min_gap:
-                    in_run = False
-    return count
+            cos_sim = (vx * tx + vy * ty) / (vmag * tmag)
+            dir_factor = max(0.0, min(1.0, (cos_sim + 1.0) / 2.0))
+        score = ext * vmag * dir_factor
+        if score > best:
+            best = score
+    return best
+
+
+def _detect_punch_peaks(scores: list[float], fps: float,
+                        min_score: float = PUNCH_SCORE_MIN,
+                        min_sep_s: float = PUNCH_PEAK_SEP_S) -> list[int]:
+    """
+    Return indices of local maxima in `scores` above `min_score`, with at
+    least `min_sep_s` seconds between successive peaks. Each punch event
+    produces exactly one peak — no separate deduplication pass needed.
+    """
+    n = len(scores)
+    if n == 0:
+        return []
+    half = max(1, int(round(min_sep_s * fps)))
+    peaks: list[int] = []
+    i = 0
+    while i < n:
+        if scores[i] < min_score:
+            i += 1
+            continue
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        is_peak = True
+        for j in range(lo, hi):
+            if j != i and scores[j] > scores[i]:
+                is_peak = False
+                break
+        if is_peak:
+            peaks.append(i)
+            i += half + 1
+        else:
+            i += 1
+    return peaks
 
 
 # ── Main computation ─────────────────────────────────────────────────────────
@@ -356,12 +441,20 @@ def compute(session_dir: Path) -> dict:
     n = len(frames)
 
     # ── Per-frame signals ─────────────────────────────────────────────────
-    my_punch     = [False] * n
-    op_punch     = [False] * n
-    my_guard_px  = [None]  * n    # 0..1 guard score per fighter per frame
-    op_guard_px  = [None]  * n
-    my_head_img  = [None]  * n
-    op_head_img  = [None]  * n
+    # my_punch / op_punch are per-frame "arm active in punch posture" flags
+    # (used by Aggression for sustained-activity credit). my_punch_score is
+    # the directional peak-detection score (used for the total punch count
+    # via _detect_punch_peaks). Keeping both lets Aggression stay well-
+    # defined per-frame while the total count benefits from peak-based
+    # precision that rejects blocks/feints/retractions.
+    my_punch       = [False] * n
+    op_punch       = [False] * n
+    my_punch_score = [0.0]   * n
+    op_punch_score = [0.0]   * n
+    my_guard_px    = [None]  * n    # 0..1 guard score per fighter per frame
+    op_guard_px    = [None]  * n
+    my_head_img    = [None]  * n
+    op_head_img    = [None]  * n
 
     for i, f in enumerate(frames):
         my_kps = f.get("my_kps")
@@ -374,6 +467,22 @@ def compute(session_dir: Path) -> dict:
         op_punch[i]    = _is_punching(op_kps, prev_op)
         my_guard_px[i] = _guard_score_frame(my_kps)
         op_guard_px[i] = _guard_score_frame(op_kps)
+
+        # Directional punch score — requires both fighters' centers to
+        # compute the "toward opponent" vector. Uses normalized bbox
+        # centers, so both wrist velocity and the direction vector live
+        # in the same coordinate space.
+        my_center = _bbox_center_norm(f.get("my_bbox"))
+        op_center = _bbox_center_norm(f.get("op_bbox"))
+        if my_center and op_center:
+            me_to_op = (op_center[0] - my_center[0],
+                        op_center[1] - my_center[1])
+            op_to_me = (-me_to_op[0], -me_to_op[1])
+        else:
+            me_to_op = None
+            op_to_me = None
+        my_punch_score[i] = _punch_score(my_kps, prev_my, me_to_op)
+        op_punch_score[i] = _punch_score(op_kps, prev_op, op_to_me)
         # Convert normalized keypoints to image pixels (head position used
         # only as a relative signal, not in arena coords).
         def _hp(kps):
@@ -569,9 +678,11 @@ def compute(session_dir: Path) -> dict:
     my_guard     = _avg(my_guard_sec)   # body-relative, never downweighted
     op_guard     = _avg(op_guard_sec)
 
-    # Dedupe consecutive-True runs into punch events (see _count_punch_events).
-    my_punches_total = _count_punch_events(my_punch)
-    op_punches_total = _count_punch_events(op_punch)
+    # Peak-detect on the directional score — one peak per real punch.
+    my_peaks = _detect_punch_peaks(my_punch_score, fps_pose)
+    op_peaks = _detect_punch_peaks(op_punch_score, fps_pose)
+    my_punches_total = len(my_peaks)
+    op_punches_total = len(op_peaks)
 
     return {
         "ok":              True,
