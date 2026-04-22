@@ -596,9 +596,11 @@ def compute(session_dir: Path) -> dict:
             my_agg_sec[s] = round(100 * me_score / tot)
             op_agg_sec[s] = 100 - my_agg_sec[s]
 
-    # ── Metric 3: Work Rate (mixed) ────────────────────────────────────────
-    # Path length per second (in scales) + punches per second. Both sides
-    # normalized against per-second max so the score is relative, not absolute.
+    # ── Metric 3: Movement (arena-only) ────────────────────────────────────
+    # Pure footwork/engine: path length per second (in scales), no punch
+    # dependency. Tier-weighted since it's arena-dependent. Answers
+    # "who's more physically active" independent of our punch detector —
+    # useful as a pace-independent cross-check for Volume below.
     my_path = [0.0] * n
     op_path = [0.0] * n
     for i in range(1, n):
@@ -607,24 +609,37 @@ def compute(session_dir: Path) -> dict:
         if i < len(op_traj_ref) and op_traj_ref[i] is not None and op_traj_ref[i - 1] is not None:
             op_path[i] = _dist(op_traj_ref[i], op_traj_ref[i - 1]) / median_scale
 
-    my_work_sec = [50] * duration_s
-    op_work_sec = [50] * duration_s
+    my_movement_sec = [50] * duration_s
+    op_movement_sec = [50] * duration_s
     for s in range(duration_s):
         idxs = by_sec.get(s, [])
         if not idxs:
             continue
-        # Arena component: path length in scales (tier-weighted).
         me_mv = sum(my_path[i] for i in idxs) * tier_weight
         op_mv = sum(op_path[i] for i in idxs) * tier_weight
-        # Body component: punch count.
+        tot = me_mv + op_mv
+        if tot > 1e-6:
+            my_movement_sec[s] = round(100 * me_mv / tot)
+            op_movement_sec[s] = 100 - my_movement_sec[s]
+
+    # ── Metric 3b: Volume (body-only, punch share) ─────────────────────────
+    # Pure punch activity: each fighter's share of detected punch-active
+    # frames per second. Body-relative — not tier-weighted. Uses the
+    # per-frame activity flag (my_punch[i]) so the per-second series
+    # reflects sustained activity; the total count comes from peak
+    # detection (my_punches/op_punches in the summary).
+    my_volume_sec = [50] * duration_s
+    op_volume_sec = [50] * duration_s
+    for s in range(duration_s):
+        idxs = by_sec.get(s, [])
+        if not idxs:
+            continue
         me_punches = sum(1 for i in idxs if my_punch[i])
         op_punches = sum(1 for i in idxs if op_punch[i])
-        me = me_mv + me_punches
-        op = op_mv + op_punches
-        tot = me + op
-        if tot > 1e-6:
-            my_work_sec[s] = round(100 * me / tot)
-            op_work_sec[s] = 100 - my_work_sec[s]
+        tot = me_punches + op_punches
+        if tot > 0:
+            my_volume_sec[s] = round(100 * me_punches / tot)
+            op_volume_sec[s] = 100 - my_volume_sec[s]
 
     # ── Metric 4: Defense (mixed) ──────────────────────────────────────────
     # Arena component: fraction of time opponent was OUT of effective range.
@@ -686,8 +701,10 @@ def compute(session_dir: Path) -> dict:
     op_ring      = _apply_fighter_visibility(_avg(op_ring_sec), op_vis)
     my_aggr      = _apply_fighter_visibility(_avg(my_agg_sec), my_vis)
     op_aggr      = _apply_fighter_visibility(_avg(op_agg_sec), op_vis)
-    my_work      = _apply_fighter_visibility(_avg(my_work_sec), my_vis)
-    op_work      = _apply_fighter_visibility(_avg(op_work_sec), op_vis)
+    my_movement  = _apply_fighter_visibility(_avg(my_movement_sec), my_vis)
+    op_movement  = _apply_fighter_visibility(_avg(op_movement_sec), op_vis)
+    my_volume    = _avg(my_volume_sec)  # body-relative, never downweighted
+    op_volume    = _avg(op_volume_sec)
     my_def       = _apply_fighter_visibility(_avg(my_def_sec), my_vis)
     op_def       = _apply_fighter_visibility(_avg(op_def_sec), op_vis)
     my_guard     = _avg(my_guard_sec)   # body-relative, never downweighted
@@ -710,8 +727,10 @@ def compute(session_dir: Path) -> dict:
         "op_ring":         op_ring,
         "my_aggression":   my_aggr,
         "op_aggression":   op_aggr,
-        "my_work_rate":    my_work,
-        "op_work_rate":    op_work,
+        "my_movement":     my_movement,
+        "op_movement":     op_movement,
+        "my_volume":       my_volume,
+        "op_volume":       op_volume,
         "my_defense":      my_def,
         "op_defense":      op_def,
         "my_guard":        my_guard,
@@ -723,8 +742,10 @@ def compute(session_dir: Path) -> dict:
             "op_ring":       op_ring_sec,
             "my_aggression": my_agg_sec,
             "op_aggression": op_agg_sec,
-            "my_work_rate":  my_work_sec,
-            "op_work_rate":  op_work_sec,
+            "my_movement":   my_movement_sec,
+            "op_movement":   op_movement_sec,
+            "my_volume":     my_volume_sec,
+            "op_volume":     op_volume_sec,
             "my_defense":    my_def_sec,
             "op_defense":    op_def_sec,
             "my_guard":      my_guard_sec,

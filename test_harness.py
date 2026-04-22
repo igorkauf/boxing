@@ -42,7 +42,8 @@ import metrics  # noqa: E402
 METRIC_FIELDS = [
     "my_ring", "op_ring",
     "my_aggression", "op_aggression",
-    "my_work_rate", "op_work_rate",
+    "my_movement", "op_movement",
+    "my_volume", "op_volume",
     "my_defense", "op_defense",
     "my_guard", "op_guard",
     "my_punches", "op_punches",
@@ -105,6 +106,8 @@ def run(sessions_dir: Path):
               f"punches {result['my_punches']:3}/{result['op_punches']:3}  "
               f"ring {result['my_ring']:3}/{result['op_ring']:3}  "
               f"aggr {result['my_aggression']:3}/{result['op_aggression']:3}  "
+              f"mov {result['my_movement']:3}/{result['op_movement']:3}  "
+              f"vol {result['my_volume']:3}/{result['op_volume']:3}  "
               f"tier {result['tier']:6}  "
               f"{elapsed_ms:6.0f}ms  "
               f"{meta.get('filename', '')}")

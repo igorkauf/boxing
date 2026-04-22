@@ -582,7 +582,8 @@
       {% set metrics = [
         ('ring',       'RING CONTROL',         'arena',   True),
         ('aggression', 'EFFECTIVE AGGRESSION', 'mixed',   True),
-        ('work_rate',  'WORK RATE',            'mixed',   True),
+        ('movement',   'MOVEMENT',             'arena',   True),
+        ('volume',     'VOLUME',               'body',    False),
         ('defense',    'DEFENSE',              'mixed',   True),
         ('guard',      'GUARD',                'body',    False),
       ] %}
@@ -1824,7 +1825,8 @@
     // uses a stacked bar so ME vs OP share adds up to 100 per second.
     mk('am-ring-chart',       series.my_ring,       series.op_ring,       {stacked:true});
     mk('am-aggression-chart', series.my_aggression, series.op_aggression);
-    mk('am-work_rate-chart',  series.my_work_rate,  series.op_work_rate);
+    mk('am-movement-chart',   series.my_movement,   series.op_movement);
+    mk('am-volume-chart',     series.my_volume,     series.op_volume);
     mk('am-defense-chart',    series.my_defense,    series.op_defense);
     mk('am-guard-chart',      series.my_guard,      series.op_guard);
 
