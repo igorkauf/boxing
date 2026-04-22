@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 _remove_gemini.py)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('app.py'\\).read\\(\\)\\); print\\('app.py parses OK,', sum\\(1 for _ in open\\('app.py'\\)\\), 'lines'\\)\")",
+      "Bash(rm _remove_gemini.py)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('app.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('app.py'\\).read\\(\\)\\); ast.parse\\(open\\('pipeline_cache.py'\\).read\\(\\)\\); print\\('both parse OK'\\)\")",
+      "Bash(python3 -c ' *)",
+      "Bash(mkdir -p diagnostics_preview)",
+      "Bash(cp -f /tmp/boxing_screenshot_preview/*.png diagnostics_preview/)",
+      "Bash(sam2_venv/bin/python3 _feet_floor_preview.py)",
+      "Bash(venv/bin/python3 -c \"import ultralytics; print\\('ok'\\)\")",
+      "Bash(venv/bin/python3 _feet_floor_preview.py)",
+      "Bash(venv/bin/python3 _arena_preview.py)"
+    ]
+  }
+}

@@ -1,0 +1,8 @@
+flask>=2.3
+ultralytics>=8.0
+opencv-python-headless>=4.8
+numpy>=1.24
+librosa>=0.10
+soundfile>=0.12
+panns_inference
+yt-dlp>=2024.1

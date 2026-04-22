@@ -1,0 +1,299 @@
+{% extends "base.html" %}
+{% block title %}Pick Boxers — Boxing Analyser{% endblock %}
+
+{% block head %}
+<style>
+  .pick-page {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 36px 24px 60px;
+  }
+  .pick-page h1 { font-size: 24px; font-weight: 800; margin-bottom: 6px; }
+  .subtitle { color: var(--muted); font-size: 14px; margin-bottom: 28px; line-height: 1.6; }
+
+  /* ── Two-column layout ── */
+  .pick-layout {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 28px;
+    align-items: start;
+  }
+  @media (max-width: 720px) {
+    .pick-layout { grid-template-columns: 1fr; }
+  }
+
+  /* ── Preview image ── */
+  .preview-wrap {
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: #000;
+  }
+  .preview-wrap img { display: block; width: 100%; height: auto; }
+
+  /* ── Candidate cards ── */
+  .candidates { display: flex; flex-direction: column; gap: 12px; }
+
+  .candidate-card {
+    background: var(--surface);
+    border: 2px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    transition: border-color .2s;
+  }
+  .candidate-card.sel-me  { border-color: #ff8c00; background: #1a1000; }
+  .candidate-card.sel-opp { border-color: #1e90ff; background: #001020; }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .card-dot {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .card-label { font-size: 14px; font-weight: 700; }
+  .card-tag {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .6px;
+    text-transform: uppercase;
+    padding: 3px 9px;
+    border-radius: 99px;
+  }
+  .tag-me  { background: #3a2000; color: #ff8c00; }
+  .tag-opp { background: #001a30; color: #1e90ff; }
+
+  .card-btns { display: flex; gap: 8px; }
+  .pick-btn {
+    flex: 1;
+    padding: 9px 0;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--muted);
+    transition: background .15s, color .15s, border-color .15s;
+    font-family: inherit;
+  }
+  .pick-btn:hover { color: var(--text); border-color: #555; }
+  .pick-btn.active-me {
+    background: #ff8c00;
+    border-color: #ff8c00;
+    color: #fff;
+  }
+  .pick-btn.active-opp {
+    background: #1e90ff;
+    border-color: #1e90ff;
+    color: #fff;
+  }
+
+  /* ── Summary + submit ── */
+  .summary-box {
+    margin-top: 16px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    font-size: 13px;
+  }
+  .summary-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; color: var(--muted); }
+  .summary-row span { font-weight: 600; color: var(--text); }
+  .summary-row .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink:0; }
+
+  #start-btn {
+    width: 100%;
+    margin-top: 16px;
+    padding: 14px;
+    font-size: 15px;
+    font-weight: 700;
+    border-radius: var(--radius);
+    border: none;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+    opacity: .4;
+    pointer-events: none;
+    transition: opacity .2s;
+    font-family: inherit;
+  }
+  #start-btn.ready { opacity: 1; pointer-events: auto; }
+  #start-btn.ready:hover { opacity: .88; }
+
+  .no-detect-note {
+    font-size: 13px;
+    color: #ffd600;
+    background: #231e00;
+    border: 1px solid #433600;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="pick-page">
+  <h1>Identify the boxers</h1>
+  <p class="subtitle">
+    Best frame auto-selected from {{ total_cands }} candidates — currently at <strong>{{ frame_pct }}%</strong> through the video.<br>
+    Mark <strong style="color:#ff8c00">yourself</strong> and your
+    <strong style="color:#1e90ff">opponent</strong>, then start analysis.
+  </p>
+
+  {% set n = meta.detected_boxes | length %}
+  {% set palette = meta.palette_css if meta.palette_css else ['#ff8c00','#0050ff','#00c800','#d20000'] %}
+
+  <div class="pick-layout">
+
+    <!-- Left: preview image + reframe button -->
+    <div>
+      <div class="preview-wrap">
+        <img src="/thumbnail/{{ meta.id }}?t={{ cand_idx }}" alt="Detected boxers">
+      </div>
+      {% if total_cands > 1 %}
+      <form method="POST" action="/pick/{{ meta.id }}/reframe" style="margin-top:10px">
+        <button type="submit" style="
+          width:100%; padding:10px; border-radius:8px; border:1px solid var(--border);
+          background:var(--surface2); color:var(--muted); font-size:13px; font-weight:600;
+          cursor:pointer; font-family:inherit; transition:color .15s,border-color .15s;
+        " onmouseover="this.style.color='var(--text)';this.style.borderColor='#555'"
+           onmouseout="this.style.color='var(--muted)';this.style.borderColor='var(--border)'">
+          🔄 Try another frame &nbsp;<span style="opacity:.5">({{ cand_idx + 1 }} / {{ total_cands }})</span>
+        </button>
+      </form>
+      {% endif %}
+    </div>
+
+    <!-- Right: candidate cards + summary -->
+    <div>
+
+      {% if n == 0 %}
+      <div class="no-detect-note">
+        ⚠️ No persons detected in this frame — the tracker will search the centre of the ring.
+        Pick which side is yours below.
+      </div>
+      {% endif %}
+
+      <div class="candidates" id="candidates">
+
+        {# Real detected boxes #}
+        {% for i in range(n) %}
+        <div class="candidate-card" id="card-{{ i }}">
+          <div class="card-header">
+            <span class="card-dot" style="background:{{ palette[i % palette|length] }}"></span>
+            <span class="card-label">Boxer {{ i + 1 }}</span>
+            <span class="card-tag tag-me"  id="tag-me-{{ i }}"  style="display:none">ME</span>
+            <span class="card-tag tag-opp" id="tag-opp-{{ i }}" style="display:none">OPP</span>
+          </div>
+          <div class="card-btns">
+            <button type="button" class="pick-btn" id="btn-me-{{ i }}"
+                    onclick="selectMe({{ i }})">👤 That's me</button>
+            <button type="button" class="pick-btn" id="btn-opp-{{ i }}"
+                    onclick="selectOpp({{ i }})">🥊 Opponent</button>
+          </div>
+        </div>
+        {% endfor %}
+
+        {# Fallback if nothing detected: virtual left/right options #}
+        {% if n == 0 %}
+        {% for i in range(2) %}
+        <div class="candidate-card" id="card-{{ i }}">
+          <div class="card-header">
+            <span class="card-dot" style="background:{{ ['#ff8c00','#1e90ff'][i] }}"></span>
+            <span class="card-label">{{ ["Left side of ring", "Right side of ring"][i] }}</span>
+            <span class="card-tag tag-me"  id="tag-me-{{ i }}"  style="display:none">ME</span>
+            <span class="card-tag tag-opp" id="tag-opp-{{ i }}" style="display:none">OPP</span>
+          </div>
+          <div class="card-btns">
+            <button type="button" class="pick-btn" id="btn-me-{{ i }}"
+                    onclick="selectMe({{ i }})">👤 That's me</button>
+            <button type="button" class="pick-btn" id="btn-opp-{{ i }}"
+                    onclick="selectOpp({{ i }})">🥊 Opponent</button>
+          </div>
+        </div>
+        {% endfor %}
+        {% endif %}
+
+      </div><!-- /candidates -->
+
+      <!-- Summary + submit -->
+      <div class="summary-box">
+        <div class="summary-row">
+          <span class="dot" style="background:#ff8c00"></span>
+          Me: <span id="lbl-me">not selected</span>
+        </div>
+        <div class="summary-row">
+          <span class="dot" style="background:#1e90ff"></span>
+          Opponent: <span id="lbl-opp">not selected</span>
+        </div>
+      </div>
+
+      <form id="pick-form" method="POST" action="/pick/{{ meta.id }}">
+        <input type="hidden" id="inp-my"  name="my_idx" value="">
+        <input type="hidden" id="inp-op"  name="op_idx" value="-1">
+        <button type="submit" id="start-btn">Start Analysis →</button>
+      </form>
+
+    </div><!-- /right -->
+  </div><!-- /layout -->
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  let selMe  = null;
+  let selOpp = null;
+  const TOTAL = {{ (n if n > 0 else 2) }};
+
+  function selectMe(idx) {
+    if (selOpp === idx) selOpp = null;
+    selMe = idx;
+    refresh();
+  }
+
+  function selectOpp(idx) {
+    if (selMe === idx) selMe = null;
+    selOpp = idx;
+    refresh();
+  }
+
+  function refresh() {
+    for (let i = 0; i < TOTAL; i++) {
+      const card   = document.getElementById('card-' + i);
+      const btnMe  = document.getElementById('btn-me-'  + i);
+      const btnOpp = document.getElementById('btn-opp-' + i);
+      const tagMe  = document.getElementById('tag-me-'  + i);
+      const tagOpp = document.getElementById('tag-opp-' + i);
+      if (!card) continue;
+
+      card.classList.toggle('sel-me',  selMe  === i);
+      card.classList.toggle('sel-opp', selOpp === i);
+      btnMe .classList.toggle('active-me',  selMe  === i);
+      btnOpp.classList.toggle('active-opp', selOpp === i);
+      tagMe .style.display = selMe  === i ? '' : 'none';
+      tagOpp.style.display = selOpp === i ? '' : 'none';
+    }
+
+    document.getElementById('lbl-me').textContent  =
+      selMe  !== null ? `Boxer ${selMe  + 1}` : 'not selected';
+    document.getElementById('lbl-opp').textContent =
+      selOpp !== null ? `Boxer ${selOpp + 1}` : 'not selected (optional)';
+
+    document.getElementById('inp-my').value = selMe  !== null ? selMe  : '';
+    document.getElementById('inp-op').value = selOpp !== null ? selOpp : -1;
+
+    const btn = document.getElementById('start-btn');
+    btn.classList.toggle('ready', selMe !== null);
+    btn.textContent = selMe !== null ? 'Start Analysis →' : 'Select yourself first';
+  }
+
+  refresh();
+</script>
+{% endblock %}

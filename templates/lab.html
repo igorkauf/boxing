@@ -1,0 +1,1850 @@
+{% extends "base.html" %}
+{% block title %}SAM2 Lab — Boxing Analyser{% endblock %}
+
+{% block head %}
+<style>
+  .lab-page {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 36px 24px 72px;
+  }
+  .lab-page h1 {
+    font-size: 26px;
+    font-weight: 800;
+    margin-bottom: 6px;
+  }
+  .subtitle {
+    color: var(--muted);
+    font-size: 14px;
+    margin-bottom: 32px;
+    line-height: 1.6;
+  }
+
+  /* ── Upload card ── */
+  .upload-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 40px;
+    text-align: center;
+  }
+  .upload-card .upload-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+  }
+  .upload-card h2 {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+  .upload-card p {
+    color: var(--muted);
+    font-size: 14px;
+    margin-bottom: 24px;
+  }
+  .file-input-wrap {
+    position: relative;
+    display: inline-block;
+  }
+  .file-input-wrap input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+  }
+  .upload-drop {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 32px 48px;
+    margin-bottom: 20px;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .upload-drop.dragover {
+    border-color: var(--accent);
+    background: #1a0a00;
+    color: var(--text);
+  }
+  #chosen-file {
+    font-size: 13px;
+    color: var(--accent);
+    margin-top: 10px;
+    min-height: 18px;
+  }
+
+  /* ── Picker ── */
+  .picker-wrap {
+    position: relative;
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: #000;
+    cursor: crosshair;
+    user-select: none;
+  }
+  .picker-wrap img {
+    display: block;
+    width: 100%;
+    height: auto;
+    /* Portrait videos: prevent the picker from becoming taller than the viewport */
+    max-height: 70vh;
+    object-fit: contain;
+  }
+  /* Dot markers on the frame */
+  .dot {
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 3px solid #fff;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    box-shadow: 0 0 0 2px rgba(0,0,0,.6);
+  }
+  .dot-me  { background: #ff8c00; }
+  .dot-opp { background: #1e90ff; }
+
+  /* crosshair label */
+  .dot-label {
+    position: absolute;
+    transform: translate(-50%, calc(-100% - 14px));
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    pointer-events: none;
+    padding: 2px 7px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .dot-label-me  { background: #ff8c00; color: #000; }
+  .dot-label-opp { background: #1e90ff; color: #fff; }
+
+  /* ── Step legend ── */
+  .step-legend {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    flex-wrap: wrap;
+  }
+  .step-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .step-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid #fff;
+    flex-shrink: 0;
+  }
+  .step-done { opacity: 1; }
+  .step-todo { opacity: .35; }
+
+  /* ── Picker instructions ── */
+  .pick-instruction {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    font-size: 13px;
+    margin-bottom: 16px;
+    color: var(--text);
+  }
+  .pick-instruction strong { color: var(--accent); }
+
+  /* ── Status card ── */
+  .status-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 32px 40px;
+    text-align: center;
+  }
+  .status-card .status-icon { font-size: 48px; margin-bottom: 16px; }
+  .status-card h2 { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+  .status-card p  { color: var(--muted); font-size: 14px; line-height: 1.6; }
+
+  .spinning { animation: spin 1.2s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Result video ── */
+  .result-video {
+    width: 100%;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: #000;
+    display: block;
+    margin-bottom: 20px;
+  }
+
+  /* ── Stats row ── */
+  .stats-row {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+  }
+  .stat-box {
+    flex: 1;
+    min-width: 120px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    text-align: center;
+  }
+  .stat-box .stat-val {
+    font-size: 26px;
+    font-weight: 800;
+    color: var(--accent);
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+  .stat-box .stat-label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+  }
+
+  /* ── Error box ── */
+  .error-box {
+    background: #1e0808;
+    border: 1px solid #5a1a1a;
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    font-size: 12px;
+    font-family: monospace;
+    color: #ff8080;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 300px;
+    overflow-y: auto;
+    text-align: left;
+    margin-top: 16px;
+  }
+
+  /* ── Action row ── */
+  .action-row {
+    display: flex;
+    gap: 12px;
+    margin-top: 20px;
+    flex-wrap: wrap;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="lab-page">
+
+  {% if meta is none %}
+  <!-- ══════════════════════════════════════════════════════════
+       PHASE 1 — UPLOAD
+       ══════════════════════════════════════════════════════════ -->
+  <h1>🔬 SAM2 Lab</h1>
+  <p class="subtitle">
+    Upload a boxing clip, click to mark both boxers, and watch SAM2 track them
+    with coloured masks. No metrics, no pose — just verifying the tracker.
+  </p>
+
+  <div class="upload-card">
+    <div class="upload-icon">📹</div>
+    <h2>Upload a video clip</h2>
+    <p>MP4, MOV or any common format. The clip is compressed to ≤1280px wide before SAM2.</p>
+
+    <form method="POST" action="/lab/upload" enctype="multipart/form-data" id="lab-upload-form">
+      <div class="upload-drop" id="drop-zone">
+        <div class="file-input-wrap">
+          <input type="file" name="video" accept="video/*" id="file-input">
+          <div>Click or drag a video file here</div>
+        </div>
+      </div>
+      <div id="chosen-file"></div>
+      <button type="submit" class="btn btn-primary" style="margin-top:20px;" id="upload-btn" disabled>
+        ▶ Upload &amp; Compress
+      </button>
+    </form>
+
+    <!-- ── or paste a URL ── -->
+    <div style="display:flex;align-items:center;gap:12px;margin-top:24px;">
+      <div style="flex:1;height:1px;background:var(--border)"></div>
+      <span style="color:var(--muted);font-size:13px;white-space:nowrap">or paste a link</span>
+      <div style="flex:1;height:1px;background:var(--border)"></div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:12px;">
+      <input id="lab-url-input" type="url"
+             placeholder="https://vimeo.com/…  (Vimeo, Instagram, Twitter/X, and 1000+ sites)"
+             style="flex:1;padding:10px 14px;border-radius:var(--radius);
+                    border:1px solid var(--border);background:var(--surface);
+                    color:var(--text);font-size:14px;font-family:inherit;outline:none;">
+      <button onclick="submitLabUrl()"
+              style="padding:10px 20px;border-radius:var(--radius);border:none;
+                     background:var(--accent);color:#fff;font-size:14px;
+                     font-family:inherit;font-weight:600;cursor:pointer;white-space:nowrap;">
+        Fetch Video
+      </button>
+    </div>
+    <div id="lab-url-error"
+         style="display:none;margin-top:10px;padding:10px 14px;border-radius:var(--radius);
+                background:#1a0a0a;border:1px solid #5a1a1a;color:#e07070;
+                font-size:13px;line-height:1.5;"></div>
+
+    <!-- Downloading overlay -->
+    <div id="lab-dl-overlay"
+         style="display:none;margin-top:20px;text-align:center;color:var(--muted);font-size:14px;">
+      <div style="font-size:28px;margin-bottom:8px;" class="spinning">⏳</div>
+      Downloading video — this may take 30–60 s…
+    </div>
+  </div>
+
+  <!-- ── Previous lab sessions ── -->
+  {% if lab_sessions %}
+  <div style="margin-top:48px;">
+    <h2 style="font-size:18px;font-weight:700;margin-bottom:16px;">
+      Previous sessions ({{ lab_sessions|length }})
+    </h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;">
+      {% for s in lab_sessions %}
+      <a href="/lab/{{ s.id }}" style="background:var(--surface);border:1px solid var(--border);
+         border-radius:var(--radius);overflow:hidden;text-decoration:none;color:var(--text);
+         display:block;transition:border-color .2s,transform .15s;">
+        <div style="width:100%;height:120px;background:#111;display:flex;align-items:center;
+             justify-content:center;font-size:32px;color:#333;overflow:hidden;">
+          {% if s.sam2_test_status == 'done' %}
+            <video src="/lab/video/{{ s.id }}" style="width:100%;height:100%;object-fit:cover;"
+                   muted preload="metadata"></video>
+          {% else %}
+            🔬
+          {% endif %}
+        </div>
+        <div style="padding:12px 14px;">
+          <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;
+               text-overflow:ellipsis;margin-bottom:4px;">{{ s.filename }}</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-size:11px;color:var(--muted);">{{ s.upload_time[:10] }}</span>
+            {% set st = s.sam2_test_status or s.status %}
+            <span style="font-size:11px;padding:2px 8px;border-radius:4px;
+              {% if st == 'done' %}background:#0a2a0a;color:#2ecc71;
+              {% elif st == 'tracking' or st == 'enriching' %}background:#1a1a0a;color:#f1c40f;
+              {% elif st == 'error' %}background:#2a0a0a;color:#e74c3c;
+              {% else %}background:#1a1a2a;color:#888;{% endif %}">
+              {{ st or 'uploaded' }}
+            </span>
+          </div>
+          {% if s.arena_metrics and s.arena_metrics.ok %}
+          <div style="margin-top:8px;font-size:11px;color:var(--muted);display:flex;gap:12px;flex-wrap:wrap;">
+            <span>Ring: {{ s.arena_metrics.my_ring }}/{{ s.arena_metrics.op_ring }}</span>
+            <span>Agg: {{ s.arena_metrics.my_aggression }}/{{ s.arena_metrics.op_aggression }}</span>
+            <span>👊 {{ s.arena_metrics.my_punches }}/{{ s.arena_metrics.op_punches }}</span>
+            {% if s.arena_metrics.tier %}
+            <span style="text-transform:uppercase;">tier: {{ s.arena_metrics.tier }}</span>
+            {% endif %}
+          </div>
+          {% endif %}
+          <form method="POST" action="/delete/{{ s.id }}"
+                onsubmit="event.stopPropagation();return confirm('Delete this session?')"
+                style="margin-top:8px;">
+            <button type="submit"
+                    style="background:none;border:1px solid #3a1111;color:#c0504f;
+                           border-radius:6px;padding:3px 10px;font-size:11px;
+                           cursor:pointer;font-family:inherit;width:100%">
+              🗑 Delete
+            </button>
+          </form>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% elif meta.sam2_test_status is none %}
+  <!-- ══════════════════════════════════════════════════════════
+       PHASE 2 — VIDEO SCRUBBER PICKER
+       ══════════════════════════════════════════════════════════ -->
+  <h1>🔬 SAM2 Lab</h1>
+  <p class="subtitle">
+    Scrub to a frame where both boxers are clearly visible, lock it, then click each boxer.
+  </p>
+
+  <div class="step-legend">
+    <div class="step-item" id="leg-me-wrap">
+      <div class="step-dot" style="background:#ff8c00"></div>
+      <span id="leg-me">ME — click to place</span>
+    </div>
+    <div class="step-item step-todo" id="leg-opp-wrap">
+      <div class="step-dot" style="background:#1e90ff"></div>
+      <span id="leg-opp">OPPONENT — click to place</span>
+    </div>
+  </div>
+
+  <div class="pick-instruction" id="pick-hint">
+    <strong>Step 1:</strong> Play or scrub the video to a frame where <em>both boxers are clearly visible</em>,
+    then press <strong>Lock this frame</strong>.
+  </div>
+
+  <form method="POST" action="/lab/{{ meta.id }}/pick" id="pick-form">
+    <input type="hidden" name="frame_time" id="frame_time">
+    <input type="hidden" name="my_x"       id="my_x">
+    <input type="hidden" name="my_y"       id="my_y">
+    <input type="hidden" name="op_x"       id="op_x">
+    <input type="hidden" name="op_y"       id="op_y">
+
+    <!-- ── Video player (shown before locking) ── -->
+    <div class="picker-wrap" id="video-wrap">
+      <video id="picker-video"
+             src="/lab/video/{{ meta.id }}"
+             style="display:block;width:100%;height:auto;max-height:70vh;object-fit:contain;"
+             playsinline controls preload="metadata">
+      </video>
+    </div>
+
+    <!-- ── Frozen canvas (shown after locking) ── -->
+    <div class="picker-wrap" id="canvas-wrap"
+         style="display:none;cursor:crosshair;position:relative;">
+      <canvas id="picker-canvas"
+              style="display:block;max-width:100%;max-height:70vh;margin:0 auto;">
+      </canvas>
+      <!-- dot/label elements injected by JS -->
+    </div>
+
+    <div class="action-row">
+      <button type="button"  class="btn btn-primary"   id="lock-btn"   onclick="lockFrame()">🔒 Lock this frame</button>
+      <button type="button"  class="btn btn-secondary" id="change-btn" onclick="unlockFrame()" style="display:none;">↩ Change frame</button>
+      <button type="button"  class="btn btn-secondary" id="reset-btn"  onclick="resetDots()"   style="display:none;">↺ Reset points</button>
+      <button type="submit"  class="btn btn-primary"   id="start-btn"  disabled                style="display:none;">▶ Start Tracking</button>
+      <a href="/lab" class="btn btn-ghost">← New upload</a>
+    </div>
+  </form>
+
+  {% elif meta.sam2_test_status == "running" %}
+  <!-- ══════════════════════════════════════════════════════════
+       PHASE 3a — RUNNING
+       ══════════════════════════════════════════════════════════ -->
+  <h1>🔬 SAM2 Lab</h1>
+
+  <div class="status-card">
+    <div class="status-icon"><span class="spinning">⚙️</span></div>
+    <h2>SAM2 is tracking…</h2>
+    <p id="prog-label">Starting up — loading model and extracting frames…</p>
+    <div style="margin-top:20px;max-width:400px;margin-left:auto;margin-right:auto;">
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:6px;">
+        <span id="prog-pct">0%</span>
+        <span id="prog-fps"></span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="prog-fill" style="width:2%"></div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px;text-align:center;" id="prog-frame"></div>
+    </div>
+    <div id="cpu-warn" style="display:none;margin-top:20px;background:#2b2200;border:1px solid #5a4000;border-radius:8px;padding:14px 18px;font-size:13px;color:#ffd600;text-align:left;max-width:480px;margin-left:auto;margin-right:auto;">
+      ⚠️ <strong>Running on CPU</strong> — expect 0.1–0.2 fps (~5–8 min for this clip).<br>
+      <span style="color:var(--muted);font-size:12px;">
+        If you're on Apple Silicon, PyTorch in the SAM2 venv may be a CPU-only build.<br>
+        Fix: <code style="background:#111;padding:2px 6px;border-radius:3px;">sam2_venv/bin/pip install torch --upgrade</code>
+      </span>
+    </div>
+  </div>
+
+  {% elif meta.sam2_test_status == "enriching" %}
+  <!-- ══════════════════════════════════════════════════════════
+       PHASE 3a-iii — POSE ENRICHMENT + METRICS
+       ══════════════════════════════════════════════════════════ -->
+  <h1>🔬 SAM2 Lab</h1>
+  <div class="status-card">
+    <div class="status-icon"><span class="spinning">📊</span></div>
+    <h2>Computing boxing metrics…</h2>
+    <p id="prog-label">Running YOLO-pose enrichment and calculating metrics…</p>
+    <div style="margin-top:20px;max-width:400px;margin-left:auto;margin-right:auto;">
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:6px;">
+        <span id="prog-pct">100%</span>
+        <span id="prog-fps"></span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="prog-fill" style="width:100%"></div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px;text-align:center;" id="prog-frame">YOLO-pose enrichment</div>
+    </div>
+  </div>
+
+  {% elif meta.sam2_test_status == "correcting" %}
+  <!-- ══════════════════════════════════════════════════════════
+       PHASE 3a-ii — CORRECTION IN PROGRESS
+       ══════════════════════════════════════════════════════════ -->
+  <h1>🔬 SAM2 Lab</h1>
+  <div class="status-card">
+    <div class="status-icon"><span class="spinning">✂️</span></div>
+    <h2>Stitching correction…</h2>
+    <p id="prog-label">Re-tracking from correction point, then stitching segments…</p>
+    <div style="margin-top:20px;max-width:400px;margin-left:auto;margin-right:auto;">
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:6px;">
+        <span id="prog-pct">0%</span>
+        <span id="prog-fps"></span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="prog-fill" style="width:2%"></div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px;text-align:center;" id="prog-frame"></div>
+    </div>
+  </div>
+
+  {% elif meta.sam2_test_status == "done" %}
+  <!-- ══════════════════════════════════════════════════════════
+       PHASE 3b — DONE
+       ══════════════════════════════════════════════════════════ -->
+
+  <!-- ── Result view (shown by default) ── -->
+  <div id="result-view">
+    <h1>🔬 SAM2 Lab — Result</h1>
+    <p class="subtitle">
+      SAM2 tracked both boxers. Orange = ME, Blue = OPPONENT.
+      {% if meta.correction_frame_time %}
+      <span style="color:#ff8c00;">✂ Correction applied at {{ "%.0f"|format(meta.correction_frame_time // 60) }}:{{ "%02.0f"|format(meta.correction_frame_time % 60) }}.</span>
+      {% endif %}
+    </p>
+
+    <!-- ══════════════════════════════════════════════════════════
+         ACTION BUTTONS — all reprocess/recompute actions live up here
+         so the video + swimlanes below are the main viewing area.
+         ══════════════════════════════════════════════════════════ -->
+    <div class="action-row" style="margin-bottom:12px;">
+      <button type="button" class="btn btn-secondary" id="refresh-arena-btn" onclick="refreshArena()">
+        ♻ Refresh arena polygon
+      </button>
+      <button type="button" class="btn btn-secondary" id="recompute-btn" onclick="recomputeMetrics()">
+        📊 Recompute metrics
+      </button>
+      <button type="button" class="btn btn-secondary" id="render-analysis-btn" onclick="renderAnalysis()">
+        🎬 Render analysis video
+      </button>
+      <button type="button" class="btn btn-primary" id="correct-btn" onclick="openCorrectionPicker()">
+        ✂ Correct from here
+      </button>
+      <button type="button" class="btn btn-secondary" id="detect-swap-btn" onclick="detectSwap()">
+        🔍 Detect &amp; fix label swap
+      </button>
+      <a href="/lab" class="btn btn-secondary">▶ Test another clip</a>
+      <form method="POST" action="/lab/{{ meta.id }}/reset" style="display:inline;">
+        <button type="submit" class="btn btn-ghost">↺ Re-pick &amp; re-run</button>
+      </form>
+    </div>
+    <div id="refresh-arena-status" style="font-size:12px;color:var(--muted);margin-bottom:8px;"></div>
+    <div id="swap-banner" style="display:none;margin-bottom:12px;padding:12px 18px;
+         border-radius:var(--radius);font-size:13px;"></div>
+
+    <video class="result-video" id="result-video" controls playsinline>
+      <source src="/video/{{ meta.id }}/sam2_test" type="video/mp4">
+      Your browser does not support video playback.
+    </video>
+
+    <!-- ══════════════════════════════════════════════════════════
+         METRIC SWIMLANES — directly below the video for side-by-side
+         comparison with the playhead. Renders the five arena-aware
+         metrics from meta.arena_metrics.
+         ══════════════════════════════════════════════════════════ -->
+    {% if meta.arena_metrics and meta.arena_metrics.ok %}
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    {% set am = meta.arena_metrics %}
+    {% set tier = am.tier or 'none' %}
+    {% set tier_colors = {'high':'#3ec977','medium':'#f5b041','low':'#e67e22','none':'#7a7a7a'} %}
+    {% set tier_color = tier_colors.get(tier, '#7a7a7a') %}
+
+    <div id="arena-metrics" style="margin-top:16px;">
+
+      <!-- Header bar: legend + overall tier + per-fighter visibility -->
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin-bottom:10px;font-size:12px;">
+        <span style="display:inline-flex;align-items:center;gap:6px;">
+          <span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#ff8c00;"></span>
+          <span style="color:var(--muted);">ME</span>
+        </span>
+        <span style="display:inline-flex;align-items:center;gap:6px;">
+          <span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:#3c8ddc;"></span>
+          <span style="color:var(--muted);">OP</span>
+        </span>
+        <span style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;">
+          <span style="color:var(--muted);">Arena tier:</span>
+          <span style="color:{{ tier_color }};font-weight:700;text-transform:uppercase;">{{ tier }}</span>
+        </span>
+        <span style="color:var(--muted);">
+          ME visible {{ (am.my_visibility * 100)|round|int }}% · OP visible {{ (am.op_visibility * 100)|round|int }}%
+        </span>
+      </div>
+
+      <!-- Swimlanes — one per metric. Each declares its arena-dependence so
+           we can show a "body-relative" badge on Guard (not tier-affected). -->
+      {% set metrics = [
+        ('ring',       'RING CONTROL',         'arena',   True),
+        ('aggression', 'EFFECTIVE AGGRESSION', 'mixed',   True),
+        ('work_rate',  'WORK RATE',            'mixed',   True),
+        ('defense',    'DEFENSE',              'mixed',   True),
+        ('guard',      'GUARD',                'body',    False),
+      ] %}
+      {% for key, label, kind, tier_affected in metrics %}
+      {% set my_val = am['my_' ~ key] %}
+      {% set op_val = am['op_' ~ key] %}
+      <div style="margin-bottom:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;font-size:12px;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span style="font-weight:700;color:var(--text);">{{ label }}</span>
+            {% if kind == 'arena' %}
+            <span style="font-size:10px;padding:2px 6px;border-radius:3px;background:#263649;color:#7fb3e0;text-transform:uppercase;">arena</span>
+            {% elif kind == 'mixed' %}
+            <span style="font-size:10px;padding:2px 6px;border-radius:3px;background:#3a2d49;color:#c9a5e5;text-transform:uppercase;">arena+body</span>
+            {% else %}
+            <span style="font-size:10px;padding:2px 6px;border-radius:3px;background:#2d3a26;color:#a6d48a;text-transform:uppercase;">body</span>
+            {% endif %}
+            {% if tier_affected %}
+            <span style="font-size:10px;color:{{ tier_color }};text-transform:uppercase;">tier {{ tier }}</span>
+            {% endif %}
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;font-weight:700;">
+            <span style="color:#ff8c00;">{{ my_val }}</span>
+            <span style="color:#666;font-weight:400;">vs</span>
+            <span style="color:#3c8ddc;">{{ op_val }}</span>
+          </div>
+        </div>
+        <div style="height:50px;"><canvas id="am-{{ key }}-chart"></canvas></div>
+      </div>
+      {% endfor %}
+
+      <!-- Bottom stats row -->
+      <div class="stats-row" style="margin-top:16px;">
+        <div class="stat-box">
+          <div class="stat-val" style="font-size:16px;">{{ am.my_punches }} / {{ am.op_punches }}</div>
+          <div class="stat-label">Punches (ME / OP)</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val" style="font-size:16px;">{{ am.duration_s }}s</div>
+          <div class="stat-label">Duration</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val" style="font-size:16px;color:{{ tier_color }};">{{ tier|upper }}</div>
+          <div class="stat-label">Arena confidence</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val" style="font-size:16px;">{{ (am.tier_weight * 100)|round|int }}%</div>
+          <div class="stat-label">Arena weight</div>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div style="margin-top:16px;padding:14px 18px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);font-size:13px;color:var(--muted);">
+      Arena metrics will appear here once processing completes.
+    </div>
+    {% endif %}
+
+    <!-- SAM2 tracking stats (moved to less-prominent position) -->
+    <div class="stats-row" style="margin-top:20px;opacity:0.75;">
+      <div class="stat-box">
+        <div class="stat-val">{{ meta.sam2_test_frames or '—' }}</div>
+        <div class="stat-label">Frames</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val">{{ meta.sam2_test_my_tracked or '—' }}</div>
+        <div class="stat-label">ME tracked</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val">{{ meta.sam2_test_op_tracked or '—' }}</div>
+        <div class="stat-label">OPP tracked</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-val">
+          {% if meta.sam2_test_fps %}{{ "%.1f"|format(meta.sam2_test_fps) }}{% else %}—{% endif %}
+        </div>
+        <div class="stat-label">Effective fps</div>
+      </div>
+      <div class="stat-box" style="flex:2;min-width:180px;">
+        <div class="stat-val" style="font-size:15px;color:var(--muted);">{{ meta.sam2_test_model or '—' }}</div>
+        <div class="stat-label">Model</div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════════
+         PIPELINE SCREENSHOTS — burned-in overlays per stage for
+         fast visual validation (no canvas/video-timing dependency).
+         ══════════════════════════════════════════════════════════ -->
+    <div id="shots-section" style="margin-top:28px;">
+      <h2 style="margin-bottom:8px;font-size:18px;">📸 Pipeline Screenshots</h2>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px;">
+        Each stage burns its overlay into a handful of sample frames so you
+        can scrub through them as a static gallery.
+      </p>
+      <div id="shots-stages" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;"></div>
+      <div id="shots-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;"></div>
+      <div id="shots-status" style="font-size:12px;color:var(--muted);margin-top:8px;"></div>
+    </div>
+
+    <script>
+    (() => {
+      const stagesEl = document.getElementById('shots-stages');
+      const gridEl   = document.getElementById('shots-grid');
+      const statusEl = document.getElementById('shots-status');
+      if (!stagesEl || !gridEl) return;
+
+      const STAGES = [
+        { id: 'arena',         label: 'Arena (motion-compensated)' },
+        { id: 'arena_heatmap', label: 'Arena heatmap' },
+        { id: 'baseline',      label: 'Baseline (boxes + skeleton)' },
+      ];
+      let currentStage = null;
+
+      function stageButton(stage, n) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn ' + (stage.id === currentStage ? 'btn-primary' : 'btn-secondary');
+        b.style.cssText = 'padding:6px 14px;font-size:12px;';
+        b.textContent = `${stage.label} (${n})`;
+        b.disabled = n === 0;
+        b.onclick = () => { currentStage = stage.id; render(); };
+        return b;
+      }
+
+      function openImage(url) {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }
+
+      async function render() {
+        stagesEl.innerHTML = '';
+        gridEl.innerHTML = '';
+        statusEl.textContent = '';
+
+        // Fetch counts for each stage.
+        const counts = {};
+        for (const s of STAGES) {
+          try {
+            const r = await fetch(`/lab/{{ meta.id }}/screenshots/${s.id}/list`);
+            if (!r.ok) { counts[s.id] = []; continue; }
+            const j = await r.json();
+            counts[s.id] = j.files || [];
+          } catch (e) { counts[s.id] = []; }
+        }
+
+        if (!currentStage) {
+          currentStage = STAGES.find(s => counts[s.id].length > 0)?.id || STAGES[0].id;
+        }
+        for (const s of STAGES) stagesEl.appendChild(stageButton(s, counts[s.id].length));
+
+        const files = counts[currentStage] || [];
+        if (!files.length) {
+          statusEl.textContent = 'No screenshots yet for this stage — processing may still be in progress.';
+          return;
+        }
+        for (const fname of files) {
+          const url = `/lab/{{ meta.id }}/screenshots/${currentStage}/${fname}`;
+          const fig = document.createElement('figure');
+          fig.style.cssText = 'margin:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:6px;cursor:pointer;';
+          fig.onclick = () => openImage(url);
+          const img = document.createElement('img');
+          img.src = url;
+          img.style.cssText = 'width:100%;height:auto;border-radius:4px;display:block;';
+          img.loading = 'lazy';
+          const cap = document.createElement('figcaption');
+          cap.textContent = fname;
+          cap.style.cssText = 'font-size:10px;color:var(--muted);margin-top:4px;text-align:center;word-break:break-all;';
+          fig.appendChild(img);
+          fig.appendChild(cap);
+          gridEl.appendChild(fig);
+        }
+        statusEl.textContent = `${files.length} screenshots · click any image to open full-size.`;
+      }
+
+      render();
+      // Refresh once after a few seconds to pick up late-arriving stages.
+      setTimeout(render, 4000);
+    })();
+    </script>
+
+    <!-- ══════════════════════════════════════════════════════════
+         PIPELINE DIAGNOSTICS — compressed source + canvas overlay
+         with per-stage layer toggles. Each stage appends new layers.
+         ══════════════════════════════════════════════════════════ -->
+    <div id="diag-section" style="margin-top:28px;">
+      <h2 style="margin-bottom:8px;font-size:18px;">🔎 Pipeline Diagnostics</h2>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px;">
+        Toggle layers to inspect what each pipeline stage sees.
+        The video below is the compressed source; overlays are drawn on top.
+      </p>
+      <div id="diag-layers" style="display:flex;flex-wrap:wrap;gap:10px 18px;margin-bottom:12px;font-size:13px;"></div>
+      <div id="diag-wrap" style="position:relative;width:100%;border-radius:var(--radius);overflow:hidden;background:#000;">
+        <video id="diag-video" src="/lab/video/{{ meta.id }}" controls playsinline
+               style="display:block;width:100%;height:auto;"></video>
+        <canvas id="diag-canvas" style="position:absolute;inset:0;pointer-events:none;width:100%;height:100%;"></canvas>
+      </div>
+      <div id="diag-status" style="font-size:12px;color:var(--muted);margin-top:6px;"></div>
+    </div>
+
+    <script>
+    (() => {
+      const video   = document.getElementById('diag-video');
+      const canvas  = document.getElementById('diag-canvas');
+      const wrap    = document.getElementById('diag-wrap');
+      const togglesEl = document.getElementById('diag-layers');
+      const statusEl  = document.getElementById('diag-status');
+      if (!video || !canvas) return;
+
+      const ctx = canvas.getContext('2d');
+      let bundle = null;       // { frame_w, frame_h, fps_pose, layers: {...} }
+      let enabled = {};        // layer name → bool
+      let frameIdx = {};       // layer name → current frame index (for linear search)
+
+      // COCO-17 skeleton connections (pairs of keypoint indices).
+      const SKEL = [
+        [5,6],[5,7],[7,9],[6,8],[8,10],      // arms + shoulders
+        [11,12],[5,11],[6,12],                // torso
+        [11,13],[13,15],[12,14],[14,16],      // legs
+        [0,1],[0,2],[1,3],[2,4],[3,5],[4,6],  // head / face
+      ];
+
+      function fitCanvas() {
+        // Match canvas backing-store to video's intrinsic pixel size so we
+        // can draw in source-pixel coordinates without manual scaling.
+        const w = video.videoWidth, h = video.videoHeight;
+        if (!w || !h) return false;
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+        }
+        return true;
+      }
+
+      function findFrame(layer, t) {
+        // Linear scan with a moving cursor — fine for O(frames) per layer.
+        const frames = layer.frames;
+        if (!frames.length) return null;
+        let i = frameIdx[layer._name] || 0;
+        if (i >= frames.length) i = frames.length - 1;
+        if (t < frames[i].t) i = 0;
+        while (i + 1 < frames.length && frames[i + 1].t <= t) i++;
+        frameIdx[layer._name] = i;
+
+        // Sparse layers only render when the playhead is near a sample frame.
+        if (layer.sparse) {
+          const window = 0.6;
+          let best = frames[i];
+          const next = (i + 1 < frames.length) ? frames[i + 1] : null;
+          if (next && Math.abs(next.t - t) < Math.abs(best.t - t)) best = next;
+          return Math.abs(best.t - t) > window ? null : best;
+        }
+        return frames[i];
+      }
+
+      function drawItem(item) {
+        // All coords in the bundle are normalized to [0,1]; scale to pixels
+        // using the canvas backing-store dimensions.
+        const W = canvas.width, H = canvas.height;
+        const X = (n) => n * W;
+        const Y = (n) => n * H;
+
+        ctx.lineWidth = Math.max(2, W / 500);
+        if (item.type === 'box' && item.box) {
+          const [x1,y1,x2,y2] = item.box;
+          const bx = X(x1), by = Y(y1), bw = X(x2) - X(x1), bh = Y(y2) - Y(y1);
+          ctx.strokeStyle = item.color || '#fff';
+          ctx.strokeRect(bx, by, bw, bh);
+          if (item.label) {
+            const fsize = Math.max(14, Math.round(W / 60));
+            ctx.font = `bold ${fsize}px sans-serif`;
+            const tw = ctx.measureText(item.label).width + 8;
+            const tx = bx, ty = Math.max(by - fsize - 6, 0);
+            ctx.fillStyle = 'rgba(0,0,0,0.7)';
+            ctx.fillRect(tx, ty, tw, fsize + 8);
+            ctx.fillStyle = item.color || '#fff';
+            ctx.fillText(item.label, tx + 4, ty + fsize + 2);
+          }
+        } else if (item.type === 'skeleton' && item.kps) {
+          const kps = item.kps;
+          ctx.strokeStyle = item.color || '#fff';
+          ctx.fillStyle   = item.color || '#fff';
+          const r = Math.max(2, W / 350);
+          for (const [a, b] of SKEL) {
+            const ka = kps[a], kb = kps[b];
+            if (!ka || !kb || ka[2] < 0.3 || kb[2] < 0.3) continue;
+            ctx.beginPath();
+            ctx.moveTo(X(ka[0]), Y(ka[1]));
+            ctx.lineTo(X(kb[0]), Y(kb[1]));
+            ctx.stroke();
+          }
+          for (const kp of kps) {
+            if (!kp || kp[2] < 0.3) continue;
+            ctx.beginPath();
+            ctx.arc(X(kp[0]), Y(kp[1]), r, 0, 2 * Math.PI);
+            ctx.fill();
+          }
+        } else if (item.type === 'point' && item.xy) {
+          ctx.fillStyle = item.color || '#fff';
+          ctx.beginPath();
+          ctx.arc(X(item.xy[0]), Y(item.xy[1]), item.radius || 6, 0, 2 * Math.PI);
+          ctx.fill();
+        } else if (item.type === 'line' && item.a && item.b) {
+          ctx.strokeStyle = item.color || '#fff';
+          ctx.beginPath();
+          ctx.moveTo(X(item.a[0]), Y(item.a[1]));
+          ctx.lineTo(X(item.b[0]), Y(item.b[1]));
+          ctx.stroke();
+        } else if (item.type === 'text' && item.xy) {
+          const fsize = Math.max(16, Math.round(W / 55));
+          ctx.font = `bold ${fsize}px sans-serif`;
+          ctx.fillStyle = 'rgba(0,0,0,0.7)';
+          const tw = ctx.measureText(item.text || '').width;
+          ctx.fillRect(X(item.xy[0]) - 2, Y(item.xy[1]) - fsize - 2, tw + 6, fsize + 6);
+          ctx.fillStyle = item.color || '#fff';
+          ctx.fillText(item.text || '', X(item.xy[0]), Y(item.xy[1]));
+        }
+      }
+
+      function redraw() {
+        if (!bundle || !fitCanvas()) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const t = video.currentTime;
+        for (const [name, layer] of Object.entries(bundle.layers)) {
+          if (!enabled[name]) continue;
+          const frame = findFrame(layer, t);
+          if (!frame) continue;
+          for (const item of frame.items) drawItem(item);
+        }
+      }
+
+      function buildToggles() {
+        togglesEl.innerHTML = '';
+        for (const [name, layer] of Object.entries(bundle.layers)) {
+          layer._name = name;
+          enabled[name] = !!layer.default_on;
+          const id = 'diag-tog-' + name;
+          const wrapLbl = document.createElement('label');
+          wrapLbl.style.cssText = 'display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none;';
+          wrapLbl.innerHTML = `
+            <input type="checkbox" id="${id}" ${enabled[name] ? 'checked' : ''}
+                   style="width:14px;height:14px;accent-color:#ff8c00;">
+            <span>${layer.label || name}</span>`;
+          wrapLbl.querySelector('input').addEventListener('change', e => {
+            enabled[name] = e.target.checked;
+            redraw();
+          });
+          togglesEl.appendChild(wrapLbl);
+        }
+      }
+
+      async function load() {
+        statusEl.textContent = 'Loading diagnostics…';
+        try {
+          const r = await fetch('/lab/{{ meta.id }}/diagnostics.json');
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          bundle = await r.json();
+          if (!bundle.layers || !Object.keys(bundle.layers).length) {
+            statusEl.textContent = 'No diagnostics layers yet.';
+            return;
+          }
+          buildToggles();
+          statusEl.textContent =
+            Object.values(bundle.layers).reduce((acc, l) => acc + l.frames.length, 0) +
+            ' overlay frames across ' + Object.keys(bundle.layers).length + ' layers.';
+          redraw();
+        } catch (e) {
+          statusEl.textContent = 'Diagnostics unavailable: ' + e.message;
+        }
+      }
+
+      video.addEventListener('loadedmetadata', redraw);
+      video.addEventListener('loadeddata',     redraw);
+      video.addEventListener('timeupdate',     redraw);
+      video.addEventListener('seeked',         redraw);
+      video.addEventListener('play',           redraw);
+      window.addEventListener('resize',        redraw);
+
+      load();
+    })();
+    </script>
+
+    <!-- Analysis video section -->
+    {% if meta.analysis_status == "done" %}
+    <div style="margin-top:24px;">
+      <h2 style="margin-bottom:12px;font-size:18px;">🎬 Analysis Video</h2>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px;">
+        Full-speed annotated video: <span style="color:#f00">■</span> attack,
+        <span style="color:#f80">■</span> retreat,
+        <span style="color:#0b0">■</span> neutral.
+        Wrists flash red on punch detection.
+      </p>
+      <video class="result-video" controls playsinline style="width:100%;border-radius:var(--radius);">
+        <source src="/lab/{{ meta.id }}/analysis_video" type="video/mp4">
+      </video>
+    </div>
+    {% elif meta.analysis_status == "rendering" %}
+    <div style="margin-top:24px;padding:20px;background:var(--surface);border:1px solid var(--border);
+         border-radius:var(--radius);text-align:center;color:var(--muted);" id="analysis-rendering">
+      <div style="font-size:28px;margin-bottom:8px;" class="spinning">🎬</div>
+      Rendering analysis video…
+    </div>
+    {% endif %}
+
+  </div>
+
+  <!-- ── Correction picker (hidden until user clicks "Correct from here") ── -->
+  <div id="correction-view" style="display:none;">
+    <h1>🔬 SAM2 Lab — Correct Tracking</h1>
+    <p class="subtitle">
+      Scrub to the exact frame where the error starts, lock it, then re-click ME and OPPONENT.
+    </p>
+
+    <div class="step-legend">
+      <div class="step-item" id="corr-leg-me-wrap">
+        <div class="step-dot" style="background:#ff8c00"></div>
+        <span>ME — click to place</span>
+      </div>
+      <div class="step-item step-todo" id="corr-leg-opp-wrap">
+        <div class="step-dot" style="background:#1e90ff"></div>
+        <span>OPPONENT — click to place</span>
+      </div>
+    </div>
+
+    <div class="pick-instruction" id="corr-hint">
+      <strong>Step 1:</strong> Scrub to the first frame where ME and OPPONENT are swapped,
+      then press <strong>Lock this frame</strong>.
+    </div>
+
+    <form method="POST" action="/lab/{{ meta.id }}/correct" id="corr-form">
+      <input type="hidden" name="frame_time" id="corr-frame-time">
+      <input type="hidden" name="my_x"       id="corr-my-x">
+      <input type="hidden" name="my_y"       id="corr-my-y">
+      <input type="hidden" name="op_x"       id="corr-op-x">
+      <input type="hidden" name="op_y"       id="corr-op-y">
+
+      <!-- Video player -->
+      <div class="picker-wrap" id="corr-video-wrap">
+        <video id="corr-video"
+               src="/lab/video/{{ meta.id }}"
+               style="display:block;width:100%;height:auto;max-height:70vh;object-fit:contain;"
+               playsinline controls preload="metadata">
+        </video>
+      </div>
+
+      <!-- Frozen canvas -->
+      <div class="picker-wrap" id="corr-canvas-wrap"
+           style="display:none;cursor:crosshair;position:relative;">
+        <canvas id="corr-canvas"
+                style="display:block;max-width:100%;max-height:70vh;margin:0 auto;">
+        </canvas>
+      </div>
+
+      <div class="action-row">
+        <button type="button"  class="btn btn-primary"   id="corr-lock-btn"   onclick="corrLockFrame()">🔒 Lock this frame</button>
+        <button type="button"  class="btn btn-secondary" id="corr-change-btn" onclick="corrUnlockFrame()" style="display:none;">↩ Change frame</button>
+        <button type="button"  class="btn btn-secondary" id="corr-reset-btn"  onclick="corrResetDots()"   style="display:none;">↺ Reset points</button>
+        <button type="submit"  class="btn btn-primary"   id="corr-start-btn"  disabled                    style="display:none;">✂ Apply correction</button>
+        <button type="button"  class="btn btn-ghost"                           onclick="closeCorrectionPicker()">← Cancel</button>
+      </div>
+    </form>
+  </div>
+
+  {% elif meta.sam2_test_status == "error" %}
+  <!-- ══════════════════════════════════════════════════════════
+       PHASE 3c — ERROR
+       ══════════════════════════════════════════════════════════ -->
+  <h1>🔬 SAM2 Lab</h1>
+
+  <div class="status-card" style="background:#1e0808;border-color:#5a1a1a;">
+    <div class="status-icon">❌</div>
+    <h2>SAM2 failed</h2>
+    <p>Something went wrong during tracking. See the error below.</p>
+    {% if meta.sam2_test_error %}
+    <div class="error-box">{{ meta.sam2_test_error }}</div>
+    {% endif %}
+  </div>
+
+  <div class="action-row">
+    <a href="/lab" class="btn btn-primary">▶ Try a different clip</a>
+    <form method="POST" action="/lab/{{ meta.id }}/reset" style="display:inline;">
+      <button type="submit" class="btn btn-secondary">↺ Re-pick &amp; retry</button>
+    </form>
+  </div>
+
+  {% else %}
+  <!-- Fallback / unexpected state -->
+  <h1>🔬 SAM2 Lab</h1>
+  <p class="subtitle">Unexpected session state. <a href="/lab" style="color:var(--accent)">Start over</a>.</p>
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if meta is none %}
+<!-- ── Upload page JS ─────────────────────────────────────────────────────── -->
+<script>
+  const fileInput  = document.getElementById("file-input");
+  const chosenFile = document.getElementById("chosen-file");
+  const uploadBtn  = document.getElementById("upload-btn");
+  const dropZone   = document.getElementById("drop-zone");
+  const form       = document.getElementById("lab-upload-form");
+
+  function onFileChosen(file) {
+    if (!file) return;
+    chosenFile.textContent = `Selected: ${file.name} (${(file.size/1024/1024).toFixed(1)} MB)`;
+    uploadBtn.disabled = false;
+  }
+
+  fileInput.addEventListener("change", () => onFileChosen(fileInput.files[0]));
+
+  dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("dragover"); });
+  dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+  dropZone.addEventListener("drop", e => {
+    e.preventDefault();
+    dropZone.classList.remove("dragover");
+    const file = e.dataTransfer.files[0];
+    if (file) { fileInput.files = e.dataTransfer.files; onFileChosen(file); }
+  });
+
+  form.addEventListener("submit", () => {
+    uploadBtn.disabled = true;
+    uploadBtn.textContent = "Uploading…";
+  });
+
+  function submitLabUrl() {
+    const url = document.getElementById("lab-url-input").value.trim();
+    const errEl = document.getElementById("lab-url-error");
+    const overlay = document.getElementById("lab-dl-overlay");
+    errEl.style.display = "none";
+    if (!url) {
+      errEl.textContent = "Please paste a video URL first.";
+      errEl.style.display = "block";
+      return;
+    }
+    overlay.style.display = "block";
+    fetch("/lab/upload_url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url })
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) {
+          overlay.style.display = "none";
+          errEl.textContent = data.error;
+          errEl.style.display = "block";
+        } else {
+          window.location.href = "/lab/" + data.sid;
+        }
+      })
+      .catch(() => {
+        overlay.style.display = "none";
+        errEl.textContent = "Download failed — check the URL and try again.";
+        errEl.style.display = "block";
+      });
+  }
+</script>
+
+{% elif meta.sam2_test_status is none %}
+<!-- ── Picker JS (video scrubber + canvas dot placement) ──────────────────── -->
+<script>
+  const video      = document.getElementById("picker-video");
+  const canvas     = document.getElementById("picker-canvas");
+  const ctx        = canvas.getContext("2d");
+  const videoWrap  = document.getElementById("video-wrap");
+  const canvasWrap = document.getElementById("canvas-wrap");
+  const lockBtn    = document.getElementById("lock-btn");
+  const changeBtn  = document.getElementById("change-btn");
+  const resetBtn   = document.getElementById("reset-btn");
+  const startBtn   = document.getElementById("start-btn");
+  const pickHint   = document.getElementById("pick-hint");
+  const legOppWrap = document.getElementById("leg-opp-wrap");
+
+  let state = "video";   // "video" | "me" | "opp" | "done"
+  let myDot = null, oppDot = null;
+
+  /* ── Lock the current video frame into the canvas ── */
+  function lockFrame() {
+    video.pause();
+    document.getElementById("frame_time").value = video.currentTime.toFixed(3);
+
+    canvas.width  = video.videoWidth  || 1280;
+    canvas.height = video.videoHeight || 720;
+    ctx.drawImage(video, 0, 0);
+
+    videoWrap.style.display  = "none";
+    canvasWrap.style.display = "block";
+    lockBtn.style.display    = "none";
+    changeBtn.style.display  = "";
+    resetBtn.style.display   = "";
+    startBtn.style.display   = "";
+
+    state = "me";
+    pickHint.innerHTML =
+      '<strong>Step 2:</strong> Click on <em>your torso</em> in the frame.';
+  }
+
+  /* ── Go back to the video player ── */
+  function unlockFrame() {
+    canvasWrap.style.display = "none";
+    videoWrap.style.display  = "block";
+    lockBtn.style.display    = "";
+    changeBtn.style.display  = "none";
+    resetBtn.style.display   = "none";
+    startBtn.style.display   = "none";
+
+    clearDots();
+    state = "video";
+    pickHint.innerHTML =
+      '<strong>Step 1:</strong> Play or scrub the video to a frame where <em>both boxers are clearly visible</em>, then press <strong>Lock this frame</strong>.';
+  }
+
+  /* ── Convert a click to natural pixel coords + wrapper-relative dot position ──
+     The canvas may be narrower than canvasWrap (portrait video, centered).
+     Natural coords use the canvas rect; dot position uses the wrapper rect so
+     the overlay dot lands exactly where the user clicked.                     */
+  function canvasToNatural(clientX, clientY) {
+    const cRect = canvas.getBoundingClientRect();      // canvas position/size
+    const wRect = canvasWrap.getBoundingClientRect();  // wrapper position
+    return {
+      x:  Math.round((clientX - cRect.left) * (canvas.width  / cRect.width)),
+      y:  Math.round((clientY - cRect.top)  * (canvas.height / cRect.height)),
+      px: clientX - wRect.left,   // relative to wrapper — for dot CSS positioning
+      py: clientY - wRect.top,
+    };
+  }
+
+  function makeDot(px, py, cls, labelText) {
+    const dot = document.createElement("div");
+    dot.className = `dot ${cls}`;
+    dot.style.left = `${px}px`;
+    dot.style.top  = `${py}px`;
+
+    const lbl = document.createElement("div");
+    lbl.className = `dot-label dot-label-${cls === "dot-me" ? "me" : "opp"}`;
+    lbl.textContent = labelText;
+    lbl.style.left = `${px}px`;
+    lbl.style.top  = `${py}px`;
+
+    canvasWrap.appendChild(dot);
+    canvasWrap.appendChild(lbl);
+    return { dot, lbl };
+  }
+
+  function removeDot(obj) {
+    if (!obj) return;
+    obj.dot.remove();
+    obj.lbl.remove();
+  }
+
+  function clearDots() {
+    removeDot(myDot); removeDot(oppDot);
+    myDot = oppDot = null;
+    document.getElementById("my_x").value = "";
+    document.getElementById("my_y").value = "";
+    document.getElementById("op_x").value = "";
+    document.getElementById("op_y").value = "";
+    startBtn.disabled = true;
+    legOppWrap.classList.add("step-todo");
+    legOppWrap.classList.remove("step-done");
+  }
+
+  /* ── Reset dots but stay on the locked frame ── */
+  function resetDots() {
+    clearDots();
+    state = "me";
+    pickHint.innerHTML =
+      '<strong>Step 2:</strong> Click on <em>your torso</em> in the frame.';
+  }
+
+  /* ── Canvas click: place ME then OPPONENT dots ── */
+  canvasWrap.addEventListener("click", e => {
+    if (state !== "me" && state !== "opp") return;
+    const pt = canvasToNatural(e.clientX, e.clientY);
+
+    if (state === "me") {
+      removeDot(myDot);
+      document.getElementById("my_x").value = pt.x;
+      document.getElementById("my_y").value = pt.y;
+      myDot = makeDot(pt.px, pt.py, "dot-me", "ME");
+      state = "opp";
+      pickHint.innerHTML =
+        '<strong>Step 3:</strong> Now click on your <em>opponent\'s torso</em>.';
+      legOppWrap.classList.remove("step-todo");
+      legOppWrap.classList.add("step-done");
+    } else {
+      removeDot(oppDot);
+      document.getElementById("op_x").value = pt.x;
+      document.getElementById("op_y").value = pt.y;
+      oppDot = makeDot(pt.px, pt.py, "dot-opp", "OPPONENT");
+      state  = "done";
+      pickHint.innerHTML =
+        '<strong>Both points set.</strong> Press <em>Start Tracking</em> when ready.';
+      startBtn.disabled = false;
+    }
+  });
+
+  document.getElementById("pick-form").addEventListener("submit", () => {
+    startBtn.disabled = true;
+    startBtn.textContent = "Starting…";
+  });
+</script>
+
+{% elif meta.sam2_test_status == "running" %}
+<!-- ── Polling JS ─────────────────────────────────────────────────────────── -->
+<script>
+  const fill      = document.getElementById("prog-fill");
+  const pctLabel  = document.getElementById("prog-pct");
+  const fpsLabel  = document.getElementById("prog-fps");
+  const frameInfo = document.getElementById("prog-frame");
+  const progLabel = document.getElementById("prog-label");
+
+  let lastPct = 0;
+
+  const cpuWarn = document.getElementById("cpu-warn");
+
+  function applyProgress(p) {
+    if (!p) return;
+    const pct = Math.max(lastPct, p.pct || 0);
+    lastPct = pct;
+    fill.style.width = pct + "%";
+    pctLabel.textContent = pct + "%";
+    if (p.fps)   fpsLabel.textContent  = p.fps.toFixed(2) + " fps";
+    if (p.phase === "enriching") {
+      fill.style.width = "100%";
+      pctLabel.textContent = "100%";
+      progLabel.textContent = "Computing boxing metrics…";
+      frameInfo.textContent = "YOLO-pose enrichment";
+    } else if (p.frame) {
+      frameInfo.textContent = `SAM2 frame ${p.frame} of ${p.total}`;
+      progLabel.textContent = pct < 100
+        ? `Tracking… ${pct}% complete`
+        : "Finishing up…";
+    }
+    if (p.device === "cpu") cpuWarn.style.display = "block";
+    else                    cpuWarn.style.display = "none";
+  }
+
+  function poll() {
+    fetch("/api/status/{{ meta.id }}")
+      .then(r => r.json())
+      .then(d => {
+        if (d.sam2_test_status === "done" || d.sam2_test_status === "error") {
+          window.location.reload();
+        } else {
+          applyProgress(d.sam2_test_progress);
+          setTimeout(poll, 2000);
+        }
+      })
+      .catch(() => setTimeout(poll, 5000));
+  }
+
+  poll();
+</script>
+
+{% elif meta.sam2_test_status == "enriching" %}
+<!-- ── Enriching polling JS ──────────────────────────────────────────────── -->
+<script>
+  function poll() {
+    fetch("/api/status/{{ meta.id }}")
+      .then(r => r.json())
+      .then(d => {
+        if (d.sam2_test_status === "done" || d.sam2_test_status === "error") {
+          window.location.reload();
+        } else {
+          setTimeout(poll, 3000);
+        }
+      })
+      .catch(() => setTimeout(poll, 5000));
+  }
+  poll();
+</script>
+
+{% elif meta.sam2_test_status == "correcting" %}
+<!-- ── Correcting polling JS (same as running) ────────────────────────────── -->
+<script>
+  const fill      = document.getElementById("prog-fill");
+  const pctLabel  = document.getElementById("prog-pct");
+  const fpsLabel  = document.getElementById("prog-fps");
+  const frameInfo = document.getElementById("prog-frame");
+  const progLabel = document.getElementById("prog-label");
+  let lastPct = 0;
+
+  function applyProgress(p) {
+    if (!p) return;
+    const pct = Math.max(lastPct, p.pct || 0);
+    lastPct = pct;
+    fill.style.width = pct + "%";
+    pctLabel.textContent = pct + "%";
+    if (p.fps)   fpsLabel.textContent = p.fps.toFixed(2) + " fps";
+    if (p.frame) {
+      frameInfo.textContent = `SAM2 frame ${p.frame} of ${p.total}`;
+      progLabel.textContent = pct < 100
+        ? `Re-tracking… ${pct}% complete`
+        : "Stitching segments…";
+    }
+  }
+
+  function poll() {
+    fetch("/api/status/{{ meta.id }}")
+      .then(r => r.json())
+      .then(d => {
+        if (d.sam2_test_status === "done" || d.sam2_test_status === "error") {
+          window.location.reload();
+        } else {
+          applyProgress(d.sam2_test_progress);
+          setTimeout(poll, 2000);
+        }
+      })
+      .catch(() => setTimeout(poll, 5000));
+  }
+  poll();
+</script>
+
+{% elif meta.sam2_test_status == "done" %}
+<!-- ── Done page JS: correction picker ───────────────────────────────────── -->
+<script>
+  const resultView     = document.getElementById("result-view");
+  const correctionView = document.getElementById("correction-view");
+  const resultVideo    = document.getElementById("result-video");
+
+  // ── Open / close the correction picker ──────────────────────────────────
+  function openCorrectionPicker() {
+    const hintTime = resultVideo.currentTime;
+    resultVideo.pause();
+    resultView.style.display     = "none";
+    correctionView.style.display = "block";
+
+    // Show the canvas-wrap immediately with a "loading frame…" placeholder,
+    // then draw the frame once the source video has seeked to the right time.
+    corrHint.innerHTML = '<em style="color:var(--muted)">Loading frame…</em>';
+    corrVideoWrap.style.display  = "none";
+    corrCanvasWrap.style.display = "block";
+    corrLockBtn.style.display    = "none";
+    corrChangeBtn.style.display  = "";
+    corrResetBtn.style.display   = "";
+    corrStartBtn.style.display   = "";
+
+    corrVideo.currentTime = hintTime;
+    corrVideo.addEventListener("seeked", function onSeeked() {
+      corrVideo.removeEventListener("seeked", onSeeked);
+      // Draw the clean source frame onto the canvas
+      corrCanvas.width  = corrVideo.videoWidth  || 1280;
+      corrCanvas.height = corrVideo.videoHeight || 720;
+      corrCtx.drawImage(corrVideo, 0, 0);
+      document.getElementById("corr-frame-time").value = corrVideo.currentTime.toFixed(3);
+      corrState = "me";
+      corrHint.innerHTML =
+        '<strong>Step 1:</strong> Click on <em>your torso</em> (orange). ' +
+        'Use <em>↩ Change frame</em> to scrub first if needed.';
+    }, { once: true });
+  }
+
+  function closeCorrectionPicker() {
+    correctionView.style.display = "none";
+    resultView.style.display     = "block";
+    corrUnlockFrame();   // reset picker state
+  }
+
+  // ── Correction picker logic (mirrors the initial picker) ─────────────────
+  const corrVideo      = document.getElementById("corr-video");
+  const corrCanvas     = document.getElementById("corr-canvas");
+  const corrCtx        = corrCanvas.getContext("2d");
+  const corrVideoWrap  = document.getElementById("corr-video-wrap");
+  const corrCanvasWrap = document.getElementById("corr-canvas-wrap");
+  const corrLockBtn    = document.getElementById("corr-lock-btn");
+  const corrChangeBtn  = document.getElementById("corr-change-btn");
+  const corrResetBtn   = document.getElementById("corr-reset-btn");
+  const corrStartBtn   = document.getElementById("corr-start-btn");
+  const corrHint       = document.getElementById("corr-hint");
+  const corrLegOpp     = document.getElementById("corr-leg-opp-wrap");
+
+  let corrState = "video";
+  let corrMyDot = null, corrOpDot = null;
+
+  function corrUnlockFrame() {
+    // Return to the video scrubber so the user can pick a different frame
+    corrCanvasWrap.style.display = "none";
+    corrVideoWrap.style.display  = "block";
+    corrLockBtn.style.display    = "";
+    corrChangeBtn.style.display  = "none";
+    corrResetBtn.style.display   = "none";
+    corrStartBtn.style.display   = "none";
+    corrClearDots();
+    corrState = "video";
+    corrHint.innerHTML =
+      'Scrub to the exact frame where the swap happens, then press <strong>Lock this frame</strong>.';
+  }
+
+  function corrLockFrame() {
+    // Called when user manually clicks "Lock this frame" after scrubbing
+    corrVideo.pause();
+    corrCanvas.width  = corrVideo.videoWidth  || 1280;
+    corrCanvas.height = corrVideo.videoHeight || 720;
+    corrCtx.drawImage(corrVideo, 0, 0);
+    document.getElementById("corr-frame-time").value = corrVideo.currentTime.toFixed(3);
+
+    corrVideoWrap.style.display  = "none";
+    corrCanvasWrap.style.display = "block";
+    corrLockBtn.style.display    = "none";
+    corrChangeBtn.style.display  = "";
+    corrResetBtn.style.display   = "";
+    corrStartBtn.style.display   = "";
+    corrState = "me";
+    corrHint.innerHTML =
+      '<strong>Step 1:</strong> Click on <em>your torso</em> (orange).';
+  }
+
+  function corrToNatural(clientX, clientY) {
+    const cRect = corrCanvas.getBoundingClientRect();
+    const wRect = corrCanvasWrap.getBoundingClientRect();
+    return {
+      x:  Math.round((clientX - cRect.left) * (corrCanvas.width  / cRect.width)),
+      y:  Math.round((clientY - cRect.top)  * (corrCanvas.height / cRect.height)),
+      px: clientX - wRect.left,
+      py: clientY - wRect.top,
+    };
+  }
+
+  function corrMakeDot(px, py, cls, label) {
+    const dot = document.createElement("div");
+    dot.className = `dot ${cls}`;
+    dot.style.left = `${px}px`;
+    dot.style.top  = `${py}px`;
+    const lbl = document.createElement("div");
+    lbl.className = `dot-label dot-label-${cls === "dot-me" ? "me" : "opp"}`;
+    lbl.textContent = label;
+    lbl.style.left = `${px}px`;
+    lbl.style.top  = `${py}px`;
+    corrCanvasWrap.appendChild(dot);
+    corrCanvasWrap.appendChild(lbl);
+    return { dot, lbl };
+  }
+
+  function corrRemoveDot(obj) {
+    if (!obj) return;
+    obj.dot.remove(); obj.lbl.remove();
+  }
+
+  function corrClearDots() {
+    corrRemoveDot(corrMyDot); corrRemoveDot(corrOpDot);
+    corrMyDot = corrOpDot = null;
+    ["corr-my-x","corr-my-y","corr-op-x","corr-op-y"].forEach(id =>
+      document.getElementById(id).value = "");
+    corrStartBtn.disabled = true;
+    corrLegOpp.classList.add("step-todo");
+    corrLegOpp.classList.remove("step-done");
+  }
+
+  function corrResetDots() {
+    corrClearDots();
+    corrState = "me";
+    corrHint.innerHTML =
+      '<strong>Step 2:</strong> Click on <em>your torso</em> (orange) in the frame.';
+  }
+
+  corrCanvasWrap.addEventListener("click", e => {
+    if (corrState !== "me" && corrState !== "opp") return;
+    const pt = corrToNatural(e.clientX, e.clientY);
+    if (corrState === "me") {
+      corrRemoveDot(corrMyDot);
+      document.getElementById("corr-my-x").value = pt.x;
+      document.getElementById("corr-my-y").value = pt.y;
+      corrMyDot = corrMakeDot(pt.px, pt.py, "dot-me", "ME");
+      corrState = "opp";
+      corrHint.innerHTML =
+        '<strong>Step 3:</strong> Now click on your <em>opponent\'s torso</em> (blue).';
+      corrLegOpp.classList.remove("step-todo");
+      corrLegOpp.classList.add("step-done");
+    } else {
+      corrRemoveDot(corrOpDot);
+      document.getElementById("corr-op-x").value = pt.x;
+      document.getElementById("corr-op-y").value = pt.y;
+      corrOpDot = corrMakeDot(pt.px, pt.py, "dot-opp", "OPPONENT");
+      corrState = "done";
+      corrHint.innerHTML =
+        '<strong>Both points set.</strong> Press <em>Apply correction</em> to re-track from here.';
+      corrStartBtn.disabled = false;
+    }
+  });
+
+  document.getElementById("corr-form").addEventListener("submit", () => {
+    corrStartBtn.disabled = true;
+    corrStartBtn.textContent = "Sending…";
+  });
+
+  // ── Automated label swap detection ────────────────────────────────────────
+  const swapBanner   = document.getElementById("swap-banner");
+  const detectSwapBtn = document.getElementById("detect-swap-btn");
+
+  function detectSwap() {
+    detectSwapBtn.disabled    = true;
+    detectSwapBtn.textContent = "🔍 Scanning…";
+    swapBanner.style.display  = "none";
+
+    fetch("/lab/{{ meta.id }}/detect_swap", { method: "POST" })
+      .then(r => r.json())
+      .then(d => {
+        detectSwapBtn.disabled    = false;
+        detectSwapBtn.textContent = "🔍 Detect & fix label swap";
+        if (d.error) {
+          swapBanner.style.cssText +=
+            ";background:#3a1a1a;border:1px solid #c0392b;color:#e74c3c;";
+          swapBanner.innerHTML = `⚠ ${d.error}`;
+          swapBanner.style.display = "block";
+          return;
+        }
+        if (!d.swap_found) {
+          swapBanner.style.cssText +=
+            ";background:#1a2e1a;border:1px solid #27ae60;color:#2ecc71;";
+          swapBanner.innerHTML = "✅ No persistent label swap detected — tracking looks clean.";
+          swapBanner.style.display = "block";
+          return;
+        }
+        // Swap found — correction is running; start polling like the "correcting" phase
+        const mins = Math.floor(d.swap_at_s / 60);
+        const secs = Math.round(d.swap_at_s % 60);
+        swapBanner.style.cssText +=
+          ";background:#2a2010;border:1px solid #f39c12;color:#f39c12;";
+        swapBanner.innerHTML =
+          `🔄 Label swap detected at ${mins}:${String(secs).padStart(2,"0")} — ` +
+          `correction running…`;
+        swapBanner.style.display = "block";
+
+        // Reload page once correction finishes (same poll loop as correcting phase)
+        function pollCorrection() {
+          fetch("/api/status/{{ meta.id }}")
+            .then(r => r.json())
+            .then(s => {
+              if (s.sam2_test_status === "done" || s.sam2_test_status === "error") {
+                window.location.reload();
+              } else {
+                setTimeout(pollCorrection, 4000);
+              }
+            })
+            .catch(() => setTimeout(pollCorrection, 5000));
+        }
+        setTimeout(pollCorrection, 3000);
+      })
+      .catch(err => {
+        detectSwapBtn.disabled    = false;
+        detectSwapBtn.textContent = "🔍 Detect & fix label swap";
+        swapBanner.style.cssText +=
+          ";background:#3a1a1a;border:1px solid #c0392b;color:#e74c3c;";
+        swapBanner.innerHTML = `⚠ Request failed: ${err}`;
+        swapBanner.style.display = "block";
+      });
+  }
+
+  // ── Recompute metrics button ───────────────────────────────────────────────
+  const recomputeBtn = document.getElementById("recompute-btn");
+  function recomputeMetrics() {
+    if (!recomputeBtn) return;
+    recomputeBtn.disabled    = true;
+    recomputeBtn.textContent = "📊 Recomputing…";
+    swapBanner.style.display = "none";
+
+    fetch("/lab/{{ meta.id }}/recompute_metrics", { method: "POST" })
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) {
+          swapBanner.style.cssText +=
+            ";background:#3a1a1a;border:1px solid #c0392b;color:#e74c3c;";
+          swapBanner.innerHTML = `⚠ ${d.error}`;
+          swapBanner.style.display = "block";
+          recomputeBtn.disabled    = false;
+          recomputeBtn.textContent = "📊 Recompute metrics";
+          return;
+        }
+        swapBanner.style.cssText +=
+          ";background:#1a2a3a;border:1px solid #3c8ddc;color:#3c8ddc;";
+        swapBanner.innerHTML = "📊 Re-running enrichment at 15fps + metrics v2… Page will reload when done.";
+        swapBanner.style.display = "block";
+
+        function pollRecompute() {
+          fetch("/api/status/{{ meta.id }}")
+            .then(r => r.json())
+            .then(s => {
+              if (s.sam2_test_status === "done" || s.sam2_test_status === "error") {
+                window.location.reload();
+              } else {
+                setTimeout(pollRecompute, 4000);
+              }
+            })
+            .catch(() => setTimeout(pollRecompute, 5000));
+        }
+        setTimeout(pollRecompute, 3000);
+      })
+      .catch(err => {
+        recomputeBtn.disabled    = false;
+        recomputeBtn.textContent = "📊 Recompute metrics";
+        swapBanner.style.cssText +=
+          ";background:#3a1a1a;border:1px solid #c0392b;color:#e74c3c;";
+        swapBanner.innerHTML = `⚠ Request failed: ${err}`;
+        swapBanner.style.display = "block";
+      });
+  }
+
+  // ── Render analysis video ────────────────────────────────────────────────
+  const renderAnalysisBtn = document.getElementById("render-analysis-btn");
+  function renderAnalysis() {
+    if (!renderAnalysisBtn) return;
+    renderAnalysisBtn.disabled    = true;
+    renderAnalysisBtn.textContent = "🎬 Rendering…";
+    swapBanner.style.display = "none";
+
+    fetch("/lab/{{ meta.id }}/render_analysis", { method: "POST" })
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) {
+          swapBanner.style.cssText +=
+            ";background:#3a1a1a;border:1px solid #c0392b;color:#e74c3c;";
+          swapBanner.innerHTML = `⚠ ${d.error}`;
+          swapBanner.style.display = "block";
+          renderAnalysisBtn.disabled    = false;
+          renderAnalysisBtn.textContent = "🎬 Render analysis video";
+          return;
+        }
+        swapBanner.style.cssText +=
+          ";background:#1a2a3a;border:1px solid #3c8ddc;color:#3c8ddc;";
+        swapBanner.innerHTML = "🎬 Rendering analysis video… Page will reload when done.";
+        swapBanner.style.display = "block";
+
+        function pollAnalysis() {
+          fetch("/api/status/{{ meta.id }}")
+            .then(r => r.json())
+            .then(s => {
+              if (s.analysis_status === "done" || s.analysis_status === "error") {
+                window.location.reload();
+              } else {
+                setTimeout(pollAnalysis, 5000);
+              }
+            })
+            .catch(() => setTimeout(pollAnalysis, 5000));
+        }
+        setTimeout(pollAnalysis, 3000);
+      })
+      .catch(err => {
+        renderAnalysisBtn.disabled    = false;
+        renderAnalysisBtn.textContent = "🎬 Render analysis video";
+        swapBanner.style.cssText +=
+          ";background:#3a1a1a;border:1px solid #c0392b;color:#e74c3c;";
+        swapBanner.innerHTML = `⚠ Request failed: ${err}`;
+        swapBanner.style.display = "block";
+      });
+  }
+
+  // ── Refresh arena polygon (wired to the top action-row button) ────────────
+  function refreshArena() {
+    const btn = document.getElementById('refresh-arena-btn');
+    const status = document.getElementById('refresh-arena-status');
+    if (btn) btn.disabled = true;
+    if (status) status.textContent = 'rebuilding arena polygon + screenshots…';
+    fetch('/lab/{{ meta.id }}/refresh_arena', {method: 'POST'})
+      .then(r => r.json().then(j => ({ok: r.ok, j})))
+      .then(({ok, j}) => {
+        if (!ok) throw new Error(j.error || 'failed');
+        if (status) status.textContent =
+          `✓ refreshed — ${j.n_foot_points} foot points, ` +
+          `${j.arena_shots} arena shots, ${j.heatmap_shots} heatmap`;
+        setTimeout(() => window.location.reload(), 600);
+      })
+      .catch(e => {
+        if (status) status.textContent = 'error: ' + e.message;
+        if (btn) btn.disabled = false;
+      });
+  }
+
+  // ── Arena-metric swimlanes (Chart.js) ─────────────────────────────────────
+  {% if meta.arena_metrics and meta.arena_metrics.ok %}
+  (function() {
+    const YOU = '#ff8c00', OPP = '#3c8ddc';
+    const series = {{ meta.arena_metrics.series | tojson }};
+    const labels = series.my_ring.map((_, i) => {
+      const m = Math.floor(i / 60), s = i % 60;
+      return `${m}:${String(s).padStart(2, '0')}`;
+    });
+
+    const tipCfg = {
+      backgroundColor:'#1a1a1a', borderColor:'#333', borderWidth:1,
+      titleColor:'#aaa', bodyColor:'#ddd',
+      callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y}` }
+    };
+    const xAxis = { stacked:false, ticks:{color:'#444', maxTicksLimit:12, font:{size:10}}, grid:{color:'#1c1c1c'} };
+    const yFixed = { min:0, max:100, ticks:{display:false}, grid:{display:false} };
+
+    // Register a plugin that draws a vertical playhead line on each chart,
+    // synced to the video's currentTime.
+    Chart.register({
+      id: 'labPlayhead',
+      afterDatasetsDraw(chart) {
+        if (chart._playheadSec == null) return;
+        const x = chart.scales.x.getPixelForValue(chart._playheadSec);
+        if (x == null) return;
+        const { top, bottom } = chart.chartArea;
+        const ctx = chart.ctx;
+        ctx.save();
+        ctx.strokeStyle = '#ffffffaa';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke();
+        ctx.restore();
+      }
+    });
+
+    const allCharts = [];
+    function mk(id, myData, opData, opts) {
+      opts = opts || {};
+      const el = document.getElementById(id);
+      if (!el) return null;
+      const isStacked = opts.stacked === true;
+      const c = new Chart(el, {
+        type: isStacked ? 'bar' : 'line',
+        data: {
+          labels,
+          datasets: isStacked ? [
+            { label:'ME', data:myData, backgroundColor:YOU+'cc', borderColor:'transparent' },
+            { label:'OP', data:opData, backgroundColor:OPP+'99', borderColor:'transparent' },
+          ] : [
+            { label:'ME', data:myData, borderWidth:1.5, pointRadius:0, tension:0.35, fill:true,
+              borderColor:YOU, backgroundColor:YOU+'33' },
+            { label:'OP', data:opData, borderWidth:1.5, pointRadius:0, tension:0.35, fill:true,
+              borderColor:OPP, backgroundColor:OPP+'26' },
+          ],
+        },
+        options: {
+          responsive:true, maintainAspectRatio:false,
+          interaction:{mode:'index',intersect:false},
+          plugins:{ legend:{display:false}, tooltip:tipCfg },
+          scales:{
+            x: Object.assign({}, xAxis, { stacked:isStacked }),
+            y: Object.assign({}, yFixed, { stacked:isStacked }),
+          },
+        },
+      });
+      allCharts.push(c);
+      return c;
+    }
+
+    // Five swimlanes, in the same order as the HTML cards. Ring Control
+    // uses a stacked bar so ME vs OP share adds up to 100 per second.
+    mk('am-ring-chart',       series.my_ring,       series.op_ring,       {stacked:true});
+    mk('am-aggression-chart', series.my_aggression, series.op_aggression);
+    mk('am-work_rate-chart',  series.my_work_rate,  series.op_work_rate);
+    mk('am-defense-chart',    series.my_defense,    series.op_defense);
+    mk('am-guard-chart',      series.my_guard,      series.op_guard);
+
+    // Playhead sync: update every chart when the main result video scrubs.
+    const rv = document.getElementById('result-video');
+    if (rv) {
+      const sync = () => {
+        const sec = Math.floor(rv.currentTime);
+        allCharts.forEach(c => {
+          if (!c) return;
+          c._playheadSec = sec;
+          c.update('none');
+        });
+      };
+      rv.addEventListener('timeupdate', sync);
+      rv.addEventListener('seeked',     sync);
+      rv.addEventListener('play',       sync);
+    }
+  })();
+  {% endif %}
+</script>
+{% endif %}
+{% endblock %}

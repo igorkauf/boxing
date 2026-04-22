@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Boxing Analyser{% endblock %}</title>
+  <style>
+    :root {
+      --bg:       #0d0d0d;
+      --surface:  #181818;
+      --surface2: #222;
+      --border:   #2c2c2c;
+      --accent:   #ff5f1f;
+      --accent2:  #e53935;
+      --blue:     #1e90ff;
+      --text:     #f0f0f0;
+      --muted:    #888;
+      --radius:   10px;
+      --green:    #43a047;
+      --yellow:   #ffd600;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      min-height: 100vh;
+    }
+
+    /* ── Nav ── */
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 28px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    nav .logo {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      color: var(--accent);
+      text-decoration: none;
+    }
+    nav .logo span { color: var(--text); }
+    nav .nav-right { margin-left: auto; }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 10px 20px;
+      border-radius: var(--radius);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      text-decoration: none;
+      transition: opacity .15s, transform .1s;
+    }
+    .btn:active { transform: scale(.97); }
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover { opacity: .88; }
+    .btn-secondary {
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { background: #2a2a2a; }
+    .btn-ghost {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { color: var(--text); border-color: #444; }
+
+    /* ── Layout ── */
+    .page { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+
+    /* ── Card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    /* ── Progress bar ── */
+    .progress-track {
+      width: 100%;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 3px;
+      transition: width .4s ease;
+    }
+
+    /* ── Tag / badge ── */
+    .badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 99px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .5px;
+      text-transform: uppercase;
+    }
+    .badge-done      { background: #1b3a1b; color: var(--green); }
+    .badge-analysing { background: #2b2200; color: var(--yellow); }
+    .badge-picking   { background: #1e2a3a; color: var(--blue); }
+    .badge-error     { background: #3a1a1a; color: var(--accent2); }
+    .badge-queued    { background: #222;    color: var(--muted); }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <nav>
+    <a class="logo" href="/">🥊 <span>Boxing Analyser</span></a>
+    <a class="btn btn-ghost" href="/lab" style="font-size:13px;padding:7px 14px;">🔬 SAM2 Lab</a>
+    <div class="nav-right">{% block nav_right %}{% endblock %}</div>
+  </nav>
+
+  {% block content %}{% endblock %}
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

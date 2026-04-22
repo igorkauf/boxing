@@ -1,0 +1,40 @@
+# ── Python ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ── Virtual envs (multi-gigabyte; regenerable) ─────────────────────────────
+venv/
+sam2_venv/
+
+# ── Model weights + checkpoints (regenerable downloads) ────────────────────
+sam2_checkpoints/
+yolov8n-pose.pt
+yolov8s-pose.pt
+*.pth
+*.onnx
+
+# ── Runtime data (per-session artifacts, cache, previews) ──────────────────
+sessions_data/
+cache/
+diagnostics_preview/
+
+# ── Backup files from in-flight edits ──────────────────────────────────────
+*.bak
+*.pre-*-removal.bak
+
+# ── OS & editor cruft ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# ── Test video assets (kept out of repo; originals live in Downloads) ──────
+*.mov
+*.MOV
+*.mp4
+*.mkv
+*.webm

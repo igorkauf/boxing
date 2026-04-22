@@ -1,0 +1,284 @@
+{% extends "base.html" %}
+
+{% block title %}Sessions — Boxing Analyser{% endblock %}
+
+{% block head %}
+<style>
+  /* ── Upload area ── */
+  .upload-zone {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 52px 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+  }
+  .upload-zone:hover, .upload-zone.drag-over {
+    border-color: var(--accent);
+    background: rgba(255,95,31,.05);
+  }
+  .upload-zone h2 { font-size: 18px; margin-bottom: 8px; }
+  .upload-zone p  { color: var(--muted); font-size: 14px; }
+  .upload-icon { font-size: 48px; margin-bottom: 16px; }
+
+  /* ── Sessions grid ── */
+  .sessions-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 40px 0 18px;
+  }
+  .sessions-header h2 { font-size: 18px; font-weight: 700; }
+
+  .sessions-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+  }
+  .session-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    text-decoration: none;
+    color: var(--text);
+    display: block;
+    transition: border-color .2s, transform .15s;
+  }
+  .session-card:hover {
+    border-color: #444;
+    transform: translateY(-2px);
+  }
+  .session-card .thumb {
+    width: 100%;
+    height: 160px;
+    object-fit: cover;
+    background: #111;
+    display: block;
+  }
+  .thumb-placeholder {
+    width: 100%;
+    height: 160px;
+    background: #111;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 40px;
+    color: #333;
+  }
+  .session-card .card-body {
+    padding: 14px 16px;
+  }
+  .session-card .card-body h3 {
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 6px;
+  }
+  .session-card .card-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 10px;
+  }
+  .session-card .card-date {
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  /* ── Spinner ── */
+  .spinner {
+    width: 22px; height: 22px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+    display: inline-block;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Upload progress overlay ── */
+  #upload-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.7);
+    z-index: 999;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+  }
+  #upload-overlay.show { display: flex; }
+  #upload-overlay p { font-size: 16px; font-weight: 600; }
+  #upload-overlay small { color: var(--muted); font-size: 13px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page">
+
+  <!-- Upload zone -->
+  <div class="upload-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+    <div class="upload-icon">🎥</div>
+    <h2>Drop a sparring video or click to browse</h2>
+    <p>MP4 · MOV · AVI &nbsp;·&nbsp; up to 4 GB</p>
+    <br>
+    <span class="btn btn-primary" style="pointer-events:none">Upload Video</span>
+  </div>
+
+  <!-- YouTube / URL input -->
+  <div style="display:flex; align-items:center; gap:12px; margin-top:16px">
+    <div style="flex:1; height:1px; background:var(--border)"></div>
+    <span style="color:var(--muted); font-size:13px; white-space:nowrap">or paste a URL</span>
+    <div style="flex:1; height:1px; background:var(--border)"></div>
+  </div>
+  <div style="display:flex; gap:10px; margin-top:12px">
+    <input id="url-input" type="url"
+           placeholder="https://vimeo.com/…  (Vimeo, Instagram, Twitter/X, and 1000+ sites)"
+           style="flex:1; padding:10px 14px; border-radius:var(--radius);
+                  border:1px solid var(--border); background:var(--surface);
+                  color:var(--text); font-size:14px; font-family:inherit; outline:none">
+    <button onclick="submitUrl()"
+            style="padding:10px 20px; border-radius:var(--radius); border:none;
+                   background:var(--accent); color:#fff; font-size:14px;
+                   font-family:inherit; font-weight:600; cursor:pointer;
+                   white-space:nowrap">
+      Analyse URL
+    </button>
+  </div>
+  <div id="url-error" style="display:none; margin-top:10px; padding:10px 14px;
+       border-radius:var(--radius); background:#1a0a0a; border:1px solid #5a1a1a;
+       color:#e07070; font-size:13px; line-height:1.5"></div>
+
+  <!-- Hidden form + file input -->
+  <form id="upload-form" action="/upload" method="POST" enctype="multipart/form-data" style="display:none">
+    <input type="file" id="file-input" name="video" accept="video/*">
+  </form>
+
+  <!-- Sessions list -->
+  {% if sessions %}
+  <div class="sessions-header">
+    <h2>Sessions ({{ sessions|length }})</h2>
+  </div>
+  <div class="sessions-grid">
+    {% for s in sessions %}
+    <a class="session-card" href="/session/{{ s.id }}">
+      {% if s.status == 'done' or s.status == 'picking' or s.status == 'analysing' %}
+        <img class="thumb" src="/thumbnail/{{ s.id }}" alt="preview"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+        <div class="thumb-placeholder" style="display:none">🥊</div>
+      {% else %}
+        <div class="thumb-placeholder">🥊</div>
+      {% endif %}
+      <div class="card-body">
+        <h3>{{ s.filename }}</h3>
+        <div class="card-meta">
+          <span class="card-date">{{ s.upload_time[:10] }}</span>
+          <span class="badge badge-{{ s.status }}">
+            {% if s.status == 'analysing' %}<span class="spinner" style="width:10px;height:10px;border-width:2px;vertical-align:middle;margin-right:4px"></span>{% endif %}
+            {{ s.status }}
+          </span>
+        </div>
+        <form method="POST" action="/delete/{{ s.id }}"
+              onsubmit="return confirm('Delete this session and all its files?')"
+              style="margin-top:10px">
+          <button type="submit"
+                  style="background:none;border:1px solid #3a1111;color:#c0504f;
+                         border-radius:6px;padding:4px 12px;font-size:12px;
+                         cursor:pointer;font-family:inherit;width:100%">
+            🗑 Delete session
+          </button>
+        </form>
+        {% if s.status == 'analysing' %}
+        <div class="progress-track" style="margin-top:10px">
+          <div class="progress-fill" style="width:{{ s.progress }}%"></div>
+        </div>
+        {% endif %}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div style="text-align:center; margin-top:80px; color:var(--muted)">
+    <div style="font-size:56px; margin-bottom:16px">🥊</div>
+    <p style="font-size:16px">No sessions yet — upload your first video above.</p>
+  </div>
+  {% endif %}
+
+</div>
+
+<!-- Upload / download progress overlay -->
+<div id="upload-overlay">
+  <div class="spinner" style="width:48px;height:48px;border-width:4px"></div>
+  <p id="overlay-title">Uploading video…</p>
+  <small id="overlay-sub">Detecting boxers in the first frame</small>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const fileInput = document.getElementById('file-input');
+  const form      = document.getElementById('upload-form');
+  const overlay   = document.getElementById('upload-overlay');
+  const dropZone  = document.getElementById('drop-zone');
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length) submitUpload(fileInput.files[0]);
+  });
+
+  // Drag-and-drop
+  ['dragenter','dragover'].forEach(ev =>
+    document.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add('drag-over'); })
+  );
+  ['dragleave','drop'].forEach(ev =>
+    document.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.remove('drag-over'); })
+  );
+  document.addEventListener('drop', e => {
+    const file = e.dataTransfer.files[0];
+    if (file) submitUpload(file);
+  });
+
+  function submitUpload(file) {
+    document.getElementById('overlay-title').textContent = 'Uploading video…';
+    document.getElementById('overlay-sub').textContent   = 'Detecting boxers in the first frame';
+    overlay.classList.add('show');
+    const fd = new FormData();
+    fd.append('video', file);
+    fetch('/upload', { method: 'POST', body: fd })
+      .then(r => { window.location.href = r.url; })
+      .catch(() => {
+        overlay.classList.remove('show');
+        alert('Upload failed — please try again.');
+      });
+  }
+
+  function showUrlError(msg) {
+    const el = document.getElementById('url-error');
+    el.textContent = msg;
+    el.style.display = 'block';
+    overlay.classList.remove('show');
+  }
+
+  function submitUrl() {
+    const url = document.getElementById('url-input').value.trim();
+    if (!url) { showUrlError('Please paste a video URL first.'); return; }
+    document.getElementById('url-error').style.display = 'none';
+    document.getElementById('overlay-title').textContent = 'Downloading video…';
+    document.getElementById('overlay-sub').textContent   = 'This may take 30–60 s depending on video length';
+    overlay.classList.add('show');
+    fetch('/upload_url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) showUrlError(data.error);
+        else window.location.href = '/pick/' + data.sid;
+      })
+      .catch(() => showUrlError('Download failed — check the URL and try again.'));
+  }
+</script>
+{% endblock %}

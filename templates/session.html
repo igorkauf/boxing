@@ -1,0 +1,917 @@
+{% extends "base.html" %}
+
+{% block title %}{{ meta.filename }} — Boxing Analyser{% endblock %}
+
+{% block nav_right %}
+<a href="/" class="btn btn-ghost" style="font-size:13px">← All Sessions</a>
+<form method="POST" action="/delete/{{ meta.id }}" style="display:inline"
+      onsubmit="return confirm('Delete this session and all its files?')">
+  <button type="submit" class="btn btn-ghost"
+          style="font-size:13px;color:#c0504f;border-color:#3a1111">
+    🗑 Delete
+  </button>
+</form>
+{% endblock %}
+
+{% block head %}
+<style>
+  .session-page { max-width: 1000px; margin: 0 auto; padding: 32px 24px; }
+
+  /* ── Section title ── */
+  .section-title {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 14px;
+  }
+
+  /* ── Video player ── */
+  .video-wrap {
+    background: #000;
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid var(--border);
+    position: relative;
+  }
+  .video-wrap video {
+    width: 100%;
+    display: block;
+    max-height: 520px;
+    background: #000;
+  }
+  .video-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .video-tab {
+    padding: 7px 18px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--muted);
+    transition: all .15s;
+  }
+  .video-tab.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  /* ── Loading state ── */
+  .loading-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 48px 32px;
+    text-align: center;
+  }
+  .loading-card h2 { font-size: 20px; margin-bottom: 8px; }
+  .loading-card p  { color: var(--muted); margin-bottom: 28px; }
+  .progress-label  { font-size: 14px; color: var(--muted); margin-top: 10px; }
+  .big-spinner {
+    width: 52px; height: 52px;
+    border: 4px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .9s linear infinite;
+    margin: 0 auto 24px;
+  }
+
+  /* ── Metrics grid ── */
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-bottom: 32px;
+  }
+  @media (max-width: 720px) {
+    .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 480px) {
+    .metrics-grid { grid-template-columns: 1fr; }
+  }
+
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 14px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .metric-card .m-header {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 4px;
+  }
+  .metric-card .m-icon  { font-size: 17px; }
+  .metric-card .m-label { font-size: 11px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: var(--muted); }
+  .m-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .m-role {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: .5px;
+    width: 26px;
+    flex-shrink: 0;
+  }
+  .m-role.you { color: #ff8c00; }
+  .m-role.opp { color: #1e90ff; }
+  .m-val {
+    font-size: 22px;
+    font-weight: 800;
+    line-height: 1;
+    width: 54px;
+    flex-shrink: 0;
+    letter-spacing: -0.5px;
+  }
+  .m-val .m-unit { font-size: 12px; font-weight: 600; }
+  .m-bar-track {
+    flex: 1;
+    height: 5px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .m-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width .6s ease;
+  }
+  .metric-card .m-desc { font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+
+  /* Colour overrides per metric */
+  .metric-blitz   .m-val      { color: #ff8c00; }
+  .metric-blitz   .you-fill   { background: #ff8c00; }
+  .metric-blitz   .opp-fill   { background: #7a4300; }
+  .metric-aggr    .m-val      { color: #e53935; }
+  .metric-aggr    .you-fill   { background: #e53935; }
+  .metric-aggr    .opp-fill   { background: #6b1716; }
+  .metric-guard   .m-val      { color: #43a047; }
+  .metric-guard   .you-fill   { background: #43a047; }
+  .metric-guard   .opp-fill   { background: #1c4c1e; }
+  .metric-stamina .m-val      { color: #ab47bc; }
+  .metric-stamina .you-fill   { background: #ab47bc; }
+  .metric-stamina .opp-fill   { background: #4c1f56; }
+  .metric-ring    .m-val      { color: #1e90ff; }
+  .metric-ring    .you-fill   { background: #1e90ff; }
+  .metric-ring    .opp-fill   { background: #0a3d6b; }
+
+  /* Stamina dynamic colour overrides (applied via inline style) */
+  .stamina-green  { color: #43a047 !important; }
+  .stamina-yellow { color: #f9a825 !important; }
+  .stamina-red    { color: #e53935 !important; }
+
+  /* Period breakdown */
+  /* ── Final score card ── */
+  .final-score-card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 32px;
+    padding: 20px 0 18px;
+    margin-bottom: 10px;
+  }
+  .fs-fighter {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+  .fs-pts {
+    font-size: 64px;
+    font-weight: 900;
+    line-height: 1;
+    letter-spacing: -3px;
+  }
+  .fs-pts.you { color: #e53935; }
+  .fs-pts.opp { color: #1e90ff; }
+  .fs-name {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .fs-divider {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: center;
+    padding-bottom: 18px;
+  }
+
+  /* ── Swimlane charts ── */
+  .swimlane-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 24px 18px;
+  }
+  .swimlane-legend {
+    display: flex;
+    gap: 18px;
+    margin-bottom: 16px;
+    font-size: 12px;
+    color: var(--muted);
+    align-items: center;
+  }
+  .sw-dot {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .sw-dot.you { background: #e53935; }
+  .sw-dot.opp { background: #1e90ff; }
+
+  /* ── Info tooltip ── */
+  .info-icon {
+    cursor: help;
+    font-size: 9px;
+    color: var(--muted);
+    opacity: 0.5;
+    margin-left: 3px;
+    user-select: none;
+  }
+  #global-tip {
+    display: none;
+    position: fixed;
+    background: #1e1e1e;
+    border: 1px solid #383838;
+    border-radius: 7px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: #ccc;
+    max-width: 230px;
+    z-index: 9999;
+    line-height: 1.5;
+    pointer-events: none;
+    box-shadow: 0 4px 16px rgba(0,0,0,.55);
+  }
+  .swimlane-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 14px;
+  }
+  .swimlane-row:last-child { margin-bottom: 0; }
+  .swimlane-label {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--muted);
+    width: 64px;
+    flex-shrink: 0;
+    line-height: 1.3;
+  }
+  .swimlane-label span {
+    display: block;
+    font-size: 8px;
+    letter-spacing: .5px;
+    font-weight: 600;
+    opacity: .6;
+    margin-top: 2px;
+  }
+  .swimlane-chart-wrap { flex: 1; min-width: 0; }
+
+  /* ── Heatmap ── */
+  .heatmap-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    display: flex;
+    gap: 32px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .heatmap-section img {
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    display: block;
+    max-width: 400px;
+    width: 100%;
+  }
+  .heatmap-legend h3 { font-size: 15px; margin-bottom: 12px; }
+  .heatmap-legend p  { font-size: 13px; color: var(--muted); line-height: 1.6; max-width: 280px; }
+  .legend-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+    font-size: 13px;
+  }
+  .legend-dot {
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* ── Error ── */
+  .error-card {
+    background: #1f0a0a;
+    border: 1px solid #4a1111;
+    border-radius: var(--radius);
+    padding: 24px;
+    color: #f08080;
+  }
+  .error-card h3 { margin-bottom: 8px; }
+  .error-card pre { font-size: 12px; opacity: .7; white-space: pre-wrap; word-break: break-all; margin-top: 10px; }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="session-page" id="app">
+
+  <!-- ── Header ── -->
+  <div style="margin-bottom: 28px;">
+    <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+      <h1 style="font-size:22px; font-weight:800;">{{ meta.filename }}</h1>
+      <span class="badge badge-{{ meta.status }}" id="status-badge">{{ meta.status }}</span>
+    </div>
+    <div style="color:var(--muted); font-size:13px; margin-top:6px;">
+      Uploaded {{ meta.upload_time[:10] }}
+      {% if meta.frame_size %} · {{ meta.frame_size[0] }}×{{ meta.frame_size[1] }}{% endif %}
+      {% if meta.fps %} · {{ "%.0f"|format(meta.fps) }} fps{% endif %}
+    </div>
+  </div>
+
+  <!-- ════════════════ ANALYSING / QUEUED ════════════════ -->
+  {% if meta.status in ('analysing', 'queued') %}
+  <div class="loading-card" id="loading-card">
+    <div class="big-spinner"></div>
+    <h2>Analysing your sparring session…</h2>
+    <p>YOLO pose tracking + computing metrics. This may take a few minutes.</p>
+    <div class="progress-track" style="max-width:400px; margin:0 auto; height:8px;">
+      <div class="progress-fill" id="prog-fill" style="width:{{ meta.progress }}%"></div>
+    </div>
+    <div class="progress-label" id="prog-label">{{ meta.progress }}%</div>
+  </div>
+
+  <!-- ════════════════ ERROR ════════════════ -->
+  {% elif meta.status == 'error' %}
+  <div class="error-card">
+    <h3>⚠️ Analysis failed</h3>
+    <p>{{ meta.error }}</p>
+  </div>
+
+  <!-- ════════════════ DONE ════════════════ -->
+  {% elif meta.status == 'done' %}
+
+  <!-- Video player -->
+  <div style="margin-bottom:32px;">
+    <div class="section-title">Video</div>
+    <div class="video-tabs">
+      <button class="video-tab active" id="tab-hl"   onclick="switchVideo('highlights')">⚡ Highlights (≤20 s)</button>
+      <button class="video-tab"        id="tab-full" onclick="switchVideo('original')">🎥 Full Video</button>
+      {% if meta.annotated_ready %}
+      <button class="video-tab"        id="tab-ann"  onclick="switchVideo('annotated')">🦴 Annotated</button>
+      {% endif %}
+    </div>
+    <div class="video-wrap">
+      <video id="video-player" controls preload="metadata">
+        <source id="video-src" src="/video/{{ meta.id }}/highlights" type="video/mp4">
+        Your browser does not support HTML5 video.
+      </video>
+    </div>
+  </div>
+
+  <!-- Global floating tooltip for ℹ icons -->
+  <div id="global-tip"></div>
+
+  <!-- ── Swimlane charts ── -->
+  {% if meta.metrics and meta.metrics.my_control_sec %}
+  <div style="margin-bottom:32px;">
+
+    <!-- Final round score -->
+    <div class="final-score-card">
+      <div class="fs-fighter">
+        <div class="fs-pts you" id="fs-you">—</div>
+        <div class="fs-name">You</div>
+      </div>
+      <div class="fs-divider" id="fs-verdict">·</div>
+      <div class="fs-fighter">
+        <div class="fs-pts opp" id="fs-opp">—</div>
+        <div class="fs-name">Opponent</div>
+      </div>
+    </div>
+
+    <div class="swimlane-card">
+      <div class="swimlane-legend">
+        <span class="sw-dot you"></span> You &nbsp;&nbsp;
+        <span class="sw-dot opp"></span> Opponent
+      </div>
+
+      <div class="swimlane-row">
+        <div class="swimlane-label">
+          Control
+          <span class="info-icon" data-tip="Who's dictating the fight — ring position, forward pressure and pace combined. Always sums to 100% between both fighters.">ℹ</span>
+        </div>
+        <div class="swimlane-chart-wrap"><canvas id="ctrl-chart"  height="62"></canvas></div>
+      </div>
+
+      <div class="swimlane-row">
+        <div class="swimlane-label">
+          Aggression
+          <span class="info-icon" data-tip="Physical output — punch rate (60%) and forward pressure (40%). Higher means more active attacking.">ℹ</span>
+        </div>
+        <div class="swimlane-chart-wrap"><canvas id="agg-chart"   height="80"></canvas></div>
+      </div>
+
+      <div class="swimlane-row">
+        <div class="swimlane-label">
+          Pace
+          <span class="info-icon" data-tip="Overall movement intensity — smoothed rolling average of body and wrist activity for both fighters.">ℹ</span>
+        </div>
+        <div class="swimlane-chart-wrap"><canvas id="pace-chart"  height="80"></canvas></div>
+      </div>
+
+      <div class="swimlane-row">
+        <div class="swimlane-label">
+          Guard
+          <span class="info-icon" data-tip="How often your hands were at or above shoulder level. Your data only.">ℹ</span>
+        </div>
+        <div class="swimlane-chart-wrap"><canvas id="guard-chart" height="80"></canvas></div>
+      </div>
+
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Annotation legend -->
+  {% if meta.annotated_ready %}
+  <div style="margin-bottom:32px;">
+    <div class="section-title">Annotation Key</div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 22px;display:flex;gap:32px;flex-wrap:wrap;font-size:13px;">
+      <div>
+        <div style="font-weight:700;margin-bottom:8px;color:var(--muted);font-size:11px;letter-spacing:.8px;text-transform:uppercase;">Bounding Box</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <div style="display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:18px;height:4px;background:#00c800;border-radius:2px"></span> Neutral</div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:18px;height:4px;background:#dc143c;border-radius:2px"></span> Attacking (moving toward opponent)</div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:18px;height:4px;background:#1e5adc;border-radius:2px"></span> Retreating (moving away)</div>
+        </div>
+      </div>
+      <div>
+        <div style="font-weight:700;margin-bottom:8px;color:var(--muted);font-size:11px;letter-spacing:.8px;text-transform:uppercase;">Wrist Dots</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <div style="display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:12px;height:12px;background:#ffffff;border-radius:50%;border:1px solid #555"></span> Guard up — wrist above shoulder</div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:12px;height:12px;background:#ffd700;border-radius:50%;border:1px solid #555"></span> Guard down — wrist below shoulder</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- ════════════════ SAM2 DIAGNOSTIC TEST ════════════════ -->
+  {% if meta.my_ref_center %}
+  <div style="margin-bottom:32px;" id="sam2-test-section">
+    <div class="section-title">SAM2 Tracker Diagnostic</div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:22px 24px;">
+
+      <p style="color:var(--muted);font-size:13px;margin-bottom:16px;line-height:1.6;">
+        Run SAM2 in isolation on your video. Generates a preview showing exactly which
+        person SAM2 is tracking as <strong style="color:#ff8c00">ME</strong> (orange) and
+        <strong style="color:#3a8eff">OPPONENT</strong> (blue) — with coloured masks and
+        bounding boxes per frame.
+      </p>
+
+      <!-- Button row -->
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+        <button id="sam2-test-btn"
+                onclick="startSam2Test()"
+                class="btn btn-ghost"
+                style="font-size:13px;font-weight:700;border-color:var(--accent);color:var(--accent);">
+          ▶ Run SAM2 Test
+        </button>
+        <span id="sam2-test-status-label" style="font-size:13px;color:var(--muted);">
+          {% if meta.sam2_test_status == 'running' %}
+            ⏳ Running… check back in a moment
+          {% elif meta.sam2_test_status == 'done' %}
+            ✓ Done — {{ meta.sam2_test_frames }} frames &nbsp;|&nbsp;
+            {{ "%.1f"|format(meta.sam2_test_fps or 0) }} fps &nbsp;|&nbsp;
+            ME tracked {{ meta.sam2_test_my_tracked }}/{{ meta.sam2_test_frames }} frames &nbsp;|&nbsp;
+            OPP tracked {{ meta.sam2_test_op_tracked }}/{{ meta.sam2_test_frames }} frames
+          {% elif meta.sam2_test_status == 'error' %}
+            ✗ Error — see below
+          {% else %}
+            Not yet run
+          {% endif %}
+        </span>
+      </div>
+
+      <!-- Error message -->
+      {% if meta.sam2_test_status == 'error' and meta.sam2_test_error %}
+      <pre style="margin-top:14px;background:#1a0a0a;border:1px solid #5a1a1a;border-radius:8px;
+                  padding:12px 16px;font-size:11px;color:#e57373;white-space:pre-wrap;
+                  word-break:break-all;max-height:200px;overflow-y:auto;">{{ meta.sam2_test_error }}</pre>
+      {% endif %}
+
+      <!-- Result video -->
+      {% if meta.sam2_test_status == 'done' %}
+      <div style="margin-top:20px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;
+                    color:var(--muted);margin-bottom:10px;">SAM2 Segmentation Preview</div>
+        <div class="video-wrap">
+          <video controls preload="metadata" style="width:100%;max-height:480px;background:#000;">
+            <source src="/video/{{ meta.id }}/sam2_test" type="video/mp4">
+          </video>
+        </div>
+      </div>
+      {% endif %}
+
+    </div>
+  </div>
+  {% endif %}
+
+  {% else %}
+  <!-- Picking / unknown state fallback -->
+  <div class="loading-card">
+    <div class="big-spinner"></div>
+    <h2>Waiting to start analysis…</h2>
+    <p>Redirecting you back to boxer selection.</p>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STATUS = "{{ meta.status }}";
+const SID    = "{{ meta.id }}";
+
+// ── Polling for in-progress sessions ────────────────────────────────────────
+if (STATUS === "analysing" || STATUS === "queued") {
+  let lastProg = {{ meta.progress }};
+
+  const fill  = document.getElementById("prog-fill");
+  const label = document.getElementById("prog-label");
+  const badge = document.getElementById("status-badge");
+
+  function poll() {
+    fetch("/api/status/" + SID)
+      .then(r => r.json())
+      .then(data => {
+        if (fill && data.progress !== lastProg) {
+          lastProg = data.progress;
+          fill.style.width  = data.progress + "%";
+          label.textContent = data.progress + "%";
+        }
+        if (data.status === "done" || data.status === "error") {
+          window.location.reload();
+        } else {
+          setTimeout(poll, 2000);
+        }
+      })
+      .catch(() => setTimeout(poll, 3000));
+  }
+  setTimeout(poll, 2000);
+}
+
+// ── Video tab switching ──────────────────────────────────────────────────────
+function switchVideo(kind) {
+  const player = document.getElementById("video-player");
+  const src    = document.getElementById("video-src");
+  const tabHl  = document.getElementById("tab-hl");
+  const tabFull= document.getElementById("tab-full");
+
+  const newSrc = "/video/" + SID + "/" + kind;
+  if (src.getAttribute("src") === newSrc) return;
+
+  src.setAttribute("src", newSrc);
+  player.load();
+
+  tabHl.classList.toggle("active",   kind === "highlights");
+  tabFull.classList.toggle("active", kind === "original");
+  const tabAnn = document.getElementById("tab-ann");
+  if (tabAnn) tabAnn.classList.toggle("active", kind === "annotated");
+}
+
+// ── SAM2 diagnostic test ─────────────────────────────────────────────────────
+function startSam2Test() {
+  const btn   = document.getElementById("sam2-test-btn");
+  const label = document.getElementById("sam2-test-status-label");
+  if (!btn) return;
+
+  btn.disabled    = true;
+  btn.textContent = "⏳ Running…";
+  label.textContent = "⏳ SAM2 is processing your video — this can take 1-5 minutes…";
+
+  fetch("/api/sam2_test/" + SID, { method: "POST" })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) {
+        label.textContent = "✗ " + d.error;
+        btn.disabled = false;
+        btn.textContent = "▶ Run SAM2 Test";
+      } else {
+        pollSam2Test();
+      }
+    })
+    .catch(e => {
+      label.textContent = "✗ Request failed: " + e;
+      btn.disabled = false;
+      btn.textContent = "▶ Run SAM2 Test";
+    });
+}
+
+function pollSam2Test() {
+  fetch("/api/status/" + SID)
+    .then(r => r.json())
+    .then(data => {
+      if (data.sam2_test_status === "done" || data.sam2_test_status === "error") {
+        // Reload to show the result video / error message
+        window.location.reload();
+      } else {
+        setTimeout(pollSam2Test, 3000);
+      }
+    })
+    .catch(() => setTimeout(pollSam2Test, 5000));
+}
+
+// Auto-resume polling if page loads mid-run
+if ("{{ meta.sam2_test_status }}" === "running") {
+  document.addEventListener("DOMContentLoaded", () => {
+    const btn = document.getElementById("sam2-test-btn");
+    if (btn) { btn.disabled = true; btn.textContent = "⏳ Running…"; }
+    pollSam2Test();
+  });
+}
+</script>
+
+{% if meta.status == 'done' and meta.metrics and meta.metrics.my_control_sec %}
+<script>
+(function () {
+  const YOU   = '#e53935';
+  const OPP   = '#1e90ff';
+  const GUARD = '#43a047';   // green — guard chart only
+
+  // ── Data ─────────────────────────────────────────────────────────────────────
+  const myCtrl     = {{ meta.metrics.my_control_sec    | tojson }};
+  const opCtrl     = {{ meta.metrics.op_control_sec    | tojson }};
+  const myAgg      = {{ meta.metrics.my_aggression_sec | tojson }};
+  const opAgg      = {{ meta.metrics.op_aggression_sec | tojson }};
+  const myGuard    = {{ meta.metrics.my_guard_sec      | default([]) | tojson }};
+  const myPace     = {{ meta.metrics.my_pace           | tojson }};
+  const opPace     = {{ meta.metrics.op_pace           | tojson }};
+  const periodScores = {{ meta.metrics.period_scores   | default([]) | tojson }};
+  // Reliability masks: 1 = confident tracking, 0 = grey out that second
+  const myRel  = {{ meta.metrics.my_reliable_sec | default([]) | tojson }};
+  const opRel  = {{ meta.metrics.op_reliable_sec | default([]) | tojson }};
+  // Helper: resolve a colour for a given data-point index
+  const relColor = (idx, confident, uncertain) =>
+    (myRel[idx] === 0 || opRel[idx] === 0) ? uncertain : confident;
+
+  const labels = myCtrl.map((_, i) => {
+    const m = Math.floor(i / 60), s = i % 60;
+    return m > 0 ? `${m}:${String(s).padStart(2,'0')}` : `${i}s`;
+  });
+
+  // ── Playhead plugin ───────────────────────────────────────────────────────────
+  const allCharts = [];
+
+  Chart.register({
+    id: 'playhead',
+    afterDatasetsDraw(chart) {
+      if (chart._playheadSec == null) return;
+      const x = chart.scales.x.getPixelForValue(chart._playheadSec);
+      if (x == null || isNaN(x)) return;
+      const { top, bottom } = chart.chartArea;
+      const ctx = chart.ctx;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(x, top);
+      ctx.lineTo(x, bottom);
+      ctx.strokeStyle = 'rgba(255,255,255,0.50)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 3]);
+      ctx.stroke();
+      ctx.restore();
+    }
+  });
+
+  // Sync playhead with video (original + annotated only; highlights are non-linear)
+  const videoEl = document.getElementById('video-player');
+  function syncPlayhead() {
+    const src = document.getElementById('video-src').getAttribute('src') || '';
+    if (src.includes('/highlights')) return;
+    const sec = Math.floor(videoEl.currentTime);
+    allCharts.forEach(c => { c._playheadSec = sec; c.update('none'); });
+  }
+  videoEl.addEventListener('timeupdate', syncPlayhead);
+  videoEl.addEventListener('seeked',     syncPlayhead);
+  videoEl.addEventListener('ended', () => {
+    allCharts.forEach(c => { c._playheadSec = null; c.update('none'); });
+  });
+
+  // ── Shared helpers ────────────────────────────────────────────────────────────
+  const tipCfg = {
+    backgroundColor:'#1a1a1a', borderColor:'#333', borderWidth:1,
+    titleColor:'#aaa', bodyColor:'#ddd',
+    callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y}%` }
+  };
+  const Y_AXIS_W = 44; // lock every y-axis to the same width so chart areas align
+  const xHide = { stacked:true,  ticks:{display:false}, grid:{display:false} };
+  const xShow = { stacked:false, ticks:{color:'#444', maxTicksLimit:12, font:{size:10}}, grid:{color:'#1c1c1c'} };
+  const yHide = s => ({ stacked:s, min:0, max:100, ticks:{display:false}, grid:{display:false}, afterFit(sc){ sc.width = Y_AXIS_W; } });
+  const yShow = { min:0, max:100, ticks:{display:false}, grid:{color:'#1c1c1c'}, afterFit(sc){ sc.width = Y_AXIS_W; } };
+
+  function mkChart(id, cfg) {
+    const c = new Chart(document.getElementById(id), cfg);
+    allCharts.push(c);
+    return c;
+  }
+
+  // ── Control — 100% stacked bar ────────────────────────────────────────────────
+  mkChart('ctrl-chart', {
+    type: 'bar',
+    data: { labels, datasets: [
+      { label:'You',      data:myCtrl,
+        backgroundColor: myCtrl.map((_, i) => relColor(i, YOU+'bb', '#55555588')),
+        borderColor:'transparent' },
+      { label:'Opponent', data:opCtrl,
+        backgroundColor: myCtrl.map((_, i) => relColor(i, OPP+'90', '#44444466')),
+        borderColor:'transparent' },
+    ]},
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index', intersect:false},
+      plugins:{ legend:{display:false}, tooltip:tipCfg },
+      scales:{ x:xHide, y:yHide(true) }
+    }
+  });
+
+  // ── Aggression — filled area, both fighters ───────────────────────────────────
+  mkChart('agg-chart', {
+    type: 'line',
+    data: { labels, datasets: [
+      { label:'You',      data:myAgg, borderWidth:2, pointRadius:0, tension:0.4, fill:true,
+        borderColor:YOU, backgroundColor:YOU+'2e',
+        segment: {
+          borderColor:     ctx => relColor(ctx.p0DataIndex, YOU, '#555'),
+          backgroundColor: ctx => relColor(ctx.p0DataIndex, YOU+'2e', '#33333322'),
+        }},
+      { label:'Opponent', data:opAgg, borderWidth:2, pointRadius:0, tension:0.4, fill:true,
+        borderColor:OPP, backgroundColor:OPP+'22',
+        segment: {
+          borderColor:     ctx => relColor(ctx.p0DataIndex, OPP, '#444'),
+          backgroundColor: ctx => relColor(ctx.p0DataIndex, OPP+'22', '#22222218'),
+        }},
+    ]},
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index', intersect:false},
+      plugins:{ legend:{display:false}, tooltip:tipCfg },
+      scales:{ x:xHide, y:yHide(false) }
+    }
+  });
+
+  // ── Pace — both fighters, x-axis visible (3rd chart) ────────────────────────
+  mkChart('pace-chart', {
+    type: 'line',
+    data: { labels, datasets: [
+      { label:'You',      data:myPace, borderWidth:2, pointRadius:0, tension:0.45, fill:true,
+        borderColor:YOU, backgroundColor:YOU+'22',
+        segment: {
+          borderColor:     ctx => relColor(ctx.p0DataIndex, YOU, '#555'),
+          backgroundColor: ctx => relColor(ctx.p0DataIndex, YOU+'22', '#33333318'),
+        }},
+      { label:'Opponent', data:opPace, borderWidth:2, pointRadius:0, tension:0.45, fill:true,
+        borderColor:OPP, backgroundColor:OPP+'18',
+        segment: {
+          borderColor:     ctx => relColor(ctx.p0DataIndex, OPP, '#444'),
+          backgroundColor: ctx => relColor(ctx.p0DataIndex, OPP+'18', '#22222212'),
+        }},
+    ]},
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index', intersect:false},
+      plugins:{ legend:{display:false}, tooltip:tipCfg },
+      scales:{ x:xHide, y:yHide(false) }
+    }
+  });
+
+  // ── Guard — you only, green (last chart, x-axis + y-axis visible) ────────────
+  mkChart('guard-chart', {
+    type: 'line',
+    data: { labels, datasets: [
+      { label:'Your guard', data:myGuard, borderWidth:2, pointRadius:0, tension:0.4, fill:true,
+        borderColor:GUARD, backgroundColor:GUARD+'28',
+        segment: {
+          borderColor:     ctx => (myRel[ctx.p0DataIndex] === 0) ? '#555' : GUARD,
+          backgroundColor: ctx => (myRel[ctx.p0DataIndex] === 0) ? '#33333322' : GUARD+'28',
+        }},
+    ]},
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index', intersect:false},
+      plugins:{ legend:{display:false}, tooltip:tipCfg },
+      scales:{ x:xShow, y:yShow }
+    }
+  });
+
+  // ── Final round score ────────────────────────────────────────────────────────
+  (function () {
+    const my = {{ meta.metrics.my_round_score | default(50) }};
+    const op = {{ meta.metrics.op_round_score | default(50) }};
+    document.getElementById('fs-you').textContent = my;
+    document.getElementById('fs-opp').textContent = op;
+    const verdict = my > op ? `You lead by ${my - op} pts`
+                 : op > my  ? `Opponent leads by ${op - my} pts`
+                 : 'Even';
+    document.getElementById('fs-verdict').textContent = verdict;
+  })();
+
+  // ── Global floating tooltip for ℹ icons ──────────────────────────────────────
+  const gtip = document.getElementById('global-tip');
+  document.querySelectorAll('.info-icon[data-tip]').forEach(el => {
+    el.addEventListener('mouseenter', e => {
+      gtip.textContent = el.dataset.tip;
+      gtip.style.display = 'block';
+    });
+    el.addEventListener('mousemove', e => {
+      // keep tooltip 14px right/below cursor, flip left if near right edge
+      const pad = 14;
+      let left = e.clientX + pad;
+      let top  = e.clientY + pad;
+      if (left + 240 > window.innerWidth)  left = e.clientX - 240 - pad;
+      if (top  + 80  > window.innerHeight) top  = e.clientY - 80  - pad;
+      gtip.style.left = left + 'px';
+      gtip.style.top  = top  + 'px';
+    });
+    el.addEventListener('mouseleave', () => { gtip.style.display = 'none'; });
+  });
+
+  // ── Drag-to-seek ─────────────────────────────────────────────────────────────
+  // Dragging (or clicking) on any swimlane canvas seeks the video and moves
+  // all playheads to the corresponding second in the timeline.
+  const totalSecs = myCtrl.length;
+
+  function seekToClientX(clientX, canvas, chart) {
+    const rect = canvas.getBoundingClientRect();
+    // chartArea coords are in CSS pixels; no need to scale by devicePixelRatio
+    const { left: caLeft, right: caRight } = chart.chartArea;
+    const cssLeft = rect.left + caLeft;
+    const cssRight = rect.left + caRight;
+    const frac = Math.max(0, Math.min(1, (clientX - cssLeft) / (cssRight - cssLeft)));
+    const sec  = Math.round(frac * (totalSecs - 1));
+
+    // Update playheads immediately
+    allCharts.forEach(c => { c._playheadSec = sec; c.update('none'); });
+
+    // Seek video (only if not on highlights)
+    const srcEl = document.getElementById('video-src');
+    if (srcEl && !srcEl.getAttribute('src').includes('/highlights')) {
+      videoEl.currentTime = sec;
+    }
+  }
+
+  allCharts.forEach(chart => {
+    const canvas = chart.canvas;
+    let dragging = false;
+
+    canvas.style.cursor = 'col-resize';
+
+    canvas.addEventListener('mousedown', e => {
+      dragging = true;
+      seekToClientX(e.clientX, canvas, chart);
+    });
+    canvas.addEventListener('mousemove', e => {
+      if (dragging) seekToClientX(e.clientX, canvas, chart);
+    });
+    canvas.addEventListener('mouseup',    () => { dragging = false; });
+    canvas.addEventListener('mouseleave', () => { dragging = false; });
+
+    // Touch support (mobile/tablet)
+    canvas.addEventListener('touchstart', e => {
+      e.preventDefault();
+      seekToClientX(e.touches[0].clientX, canvas, chart);
+    }, { passive: false });
+    canvas.addEventListener('touchmove', e => {
+      e.preventDefault();
+      seekToClientX(e.touches[0].clientX, canvas, chart);
+    }, { passive: false });
+  });
+
+})();
+</script>
+{% endif %}
+{% endblock %}
