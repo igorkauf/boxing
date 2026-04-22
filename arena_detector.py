@@ -62,36 +62,28 @@ BBOX_H_W_MIN    = 0.70    # skip bbox-bottom foot-point when bbox is horizontal
 # ── Camera motion helpers ─────────────────────────────────────────────────────
 class _KLTMotion:
     """
-    Keyframe-based camera-motion estimator.
+    Keyframe-based motion estimator with DIRECT keyframe-to-current LK.
 
-    Maintains two parallel position arrays for every alive feature track:
-      • kf_positions: where the track sat AT the current keyframe
-      • cur_positions: where the track sits NOW (updated each LK step)
+    Every non-keyframe step runs LK straight from the stored keyframe
+    image to the current image — NOT chained from the previous frame.
+    This is the key difference from a naive "keyframe" scheme: with
+    pairwise chaining, LK subpixel drift accumulates within the window
+    and becomes baked into every inter-keyframe transform, causing the
+    reprojected centroid to migrate slowly over long clips.
 
-    Each frame returns a dict describing its relationship to the current
-    keyframe. For frames within a keyframe window, the direct keyframe-to-
-    current warp is estimated from the (kf_positions, cur_positions) pairs
-    of all surviving tracks — no pairwise chain, no drift accumulation.
+    With direct LK-from-keyframe there is zero chain within a window.
+    Per-frame LK error is whatever a single 30-frame-baseline LK call
+    produces, but it does NOT compound.
 
-    Keyframes are declared every KEYFRAME_INTERVAL frames (or earlier if
-    the alive-track count falls below KLT_MIN_FEATURES). At each keyframe
-    boundary, the transform from previous keyframe to this one is
-    estimated from tracks that survived across the boundary. Fresh
-    Shi-Tomasi corners are then detected to restock the pool.
-
-    Drift bound vs. pairwise chain:
-      • Pairwise chain: errors accumulate as O(√n) over n frames.
-      • Keyframe-based: errors accumulate only across keyframe boundaries,
-        so O(√k) where k is the number of keyframes. For a 3-min clip
-        (~2700 pose-frames, ~90 keyframes), that's ≈5× tighter drift.
+    Cost: same as pairwise (one LK call per step). Correctness: much
+    better for clips longer than ~30 s.
     """
 
     def __init__(self, keyframe_interval: int = KEYFRAME_INTERVAL):
         self.keyframe_interval = keyframe_interval
-        self.prev_gray    = None
-        # Parallel arrays, both N×2 float32:
-        self.kf_positions  = None   # alive-track positions at current keyframe
-        self.cur_positions = None   # alive-track positions at current frame
+        # Keyframe state:
+        self.kf_gray      = None            # the keyframe image itself
+        self.kf_positions = None            # N×2 positions at the keyframe
         self.frames_since_kf = 0
 
     def step(self, cur_gray, cur_mask):
@@ -99,76 +91,99 @@ class _KLTMotion:
         Advance one frame. Returns dict:
 
             {'is_keyframe':           bool,
-             'kf_to_cur':             2×3 affine (keyframe pixel → cur pixel)
-             'prev_kf_to_this_kf':    2×3 affine or None, only non-None at
-                                     keyframe boundaries; maps previous-
-                                     keyframe pixel → this-keyframe pixel.}
-
-        Caller composes warps:
-            within-window:        warp_to_first[i] = warp_to_first[kf] ∘ inv(kf_to_cur)
-            new-keyframe:         warp_to_first[i] = warp_to_first[prev_kf] ∘ inv(prev_kf_to_this_kf)
+             'kf_to_cur':             2×3 affine (kf pixel → cur pixel)
+             'prev_kf_to_this_kf':    2×3 or None; at keyframe boundaries
+                                     maps previous keyframe → this keyframe.}
         """
-        # Bootstrap on first frame
-        if self.prev_gray is None:
+        # Bootstrap: first frame IS the first keyframe.
+        if self.kf_gray is None:
             pts = self._detect(cur_gray, cur_mask).reshape(-1, 2)
-            self.kf_positions  = pts
-            self.cur_positions = pts.copy()
-            self.prev_gray     = cur_gray
+            self.kf_gray      = cur_gray
+            self.kf_positions = pts
             self.frames_since_kf = 0
             return {"is_keyframe":        True,
                     "kf_to_cur":          _identity(),
                     "prev_kf_to_this_kf": _identity()}
 
-        # Forward LK + FB check + fighter-mask filter on current alive tracks.
-        if len(self.cur_positions) > 0:
-            kf_kept, cur_kept = self._lk_prune(cur_gray, cur_mask)
-            self.kf_positions  = kf_kept
-            self.cur_positions = cur_kept
+        # DIRECT LK from keyframe to current frame. No chaining: we seed
+        # with self.kf_positions (unchanged since the keyframe was set) and
+        # ask LK for their positions in cur_gray directly. LK's pyramid
+        # handles the long baseline.
+        kf_kept, cur_pts = self._lk_direct(cur_gray, cur_mask)
 
-        # Decide whether to declare a new keyframe.
+        # Estimate transform (same machinery regardless of whether we're
+        # about to declare a new keyframe).
+        M = self._estimate_affine(kf_kept, cur_pts) \
+            if len(cur_pts) >= MIN_MATCHES else None
+
         need_new_kf = (
             self.frames_since_kf >= self.keyframe_interval
-            or len(self.cur_positions) < KLT_MIN_FEATURES
+            or len(cur_pts) < KLT_MIN_FEATURES
         )
 
         if need_new_kf:
-            return self._make_new_keyframe(cur_gray, cur_mask)
+            # M (if computed) maps prev keyframe → this-frame pixel — which
+            # is exactly the inter-keyframe transform we need to hand back.
+            prev_kf_to_this_kf = M if M is not None else _identity()
+            # Mint a new keyframe: this frame's gray becomes kf_gray, and
+            # kf_positions becomes the surviving cur_pts PLUS fresh
+            # Shi-Tomasi corners for restocking.
+            new_detected = self._detect(cur_gray, cur_mask).reshape(-1, 2)
+            if len(cur_pts) > 0 and len(new_detected) > 0:
+                combined = np.concatenate([cur_pts, new_detected], axis=0)
+            elif len(new_detected) > 0:
+                combined = new_detected
+            else:
+                combined = cur_pts
+            self.kf_gray      = cur_gray
+            self.kf_positions = combined
+            self.frames_since_kf = 0
+            return {"is_keyframe":        True,
+                    "kf_to_cur":          _identity(),
+                    "prev_kf_to_this_kf": prev_kf_to_this_kf}
 
-        # Within-window: estimate T_kf_to_cur directly from surviving tracks.
-        kf_to_cur = self._estimate_affine(self.kf_positions, self.cur_positions)
-        self.prev_gray = cur_gray
+        # Within-window: prune dropped tracks so next frame's LK starts
+        # from the same-or-shrinking kf_positions.
+        self.kf_positions = kf_kept
         self.frames_since_kf += 1
         return {"is_keyframe":        False,
-                "kf_to_cur":          kf_to_cur if kf_to_cur is not None else _identity(),
+                "kf_to_cur":          M if M is not None else _identity(),
                 "prev_kf_to_this_kf": None}
 
     # ── Internals ────────────────────────────────────────────────────────
-    def _lk_prune(self, cur_gray, cur_mask):
-        """Forward+backward LK with FB error threshold + mask filter. Returns
-        (kf_positions_surviving, cur_positions_surviving) — kept parallel."""
+    def _lk_direct(self, cur_gray, cur_mask):
+        """
+        LK from self.kf_gray → cur_gray using self.kf_positions as seeds.
+        Returns (kf_positions_surviving, cur_positions_surviving).
+        No chain — every call is independent LK over the keyframe baseline.
+        """
+        if len(self.kf_positions) == 0:
+            z = np.zeros((0, 2), dtype=np.float32)
+            return z, z
         lk_params = dict(
             winSize=KLT_WIN_SIZE,
             maxLevel=KLT_PYR_LEVELS,
             criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
         )
-        src = self.cur_positions.reshape(-1, 1, 2).astype(np.float32)
+        src = self.kf_positions.reshape(-1, 1, 2).astype(np.float32)
         cur_pts, status_f, _ = cv2.calcOpticalFlowPyrLK(
-            self.prev_gray, cur_gray, src, None, **lk_params)
+            self.kf_gray, cur_gray, src, None, **lk_params)
         if cur_pts is None:
-            return np.zeros((0, 2), dtype=np.float32), np.zeros((0, 2), dtype=np.float32)
+            z = np.zeros((0, 2), dtype=np.float32)
+            return z, z
         back_pts, status_b, _ = cv2.calcOpticalFlowPyrLK(
-            cur_gray, self.prev_gray, cur_pts, None, **lk_params)
+            cur_gray, self.kf_gray, cur_pts, None, **lk_params)
         if back_pts is None:
-            return np.zeros((0, 2), dtype=np.float32), np.zeros((0, 2), dtype=np.float32)
+            z = np.zeros((0, 2), dtype=np.float32)
+            return z, z
         fb_err = np.linalg.norm(
-            back_pts.reshape(-1, 2) - self.cur_positions, axis=1
+            back_pts.reshape(-1, 2) - self.kf_positions, axis=1
         )
         keep = (
             (status_f.flatten() == 1)
             & (status_b.flatten() == 1)
             & (fb_err < KLT_FB_MAX_ERR)
         )
-        # Mask out features now sitting on a fighter (cur_mask==0 on fighters).
         if cur_mask is not None:
             cxy = cur_pts.reshape(-1, 2)
             h_, w_ = cur_mask.shape
@@ -177,35 +192,6 @@ class _KLTMotion:
             on_bg = cur_mask[yi, xi] > 0
             keep &= on_bg
         return self.kf_positions[keep], cur_pts.reshape(-1, 2)[keep]
-
-    def _make_new_keyframe(self, cur_gray, cur_mask):
-        """Close out the current keyframe window, emit the inter-keyframe
-        transform, then re-seed features for the new keyframe."""
-        prev_kf_to_this_kf = self._estimate_affine(
-            self.kf_positions, self.cur_positions
-        )
-        # Re-seed: take new detections and combine with the surviving tracks
-        # so we keep identity where possible but have fresh coverage.
-        new_pts = self._detect(cur_gray, cur_mask).reshape(-1, 2)
-        if len(self.cur_positions) > 0 and len(new_pts) > 0:
-            combined = np.concatenate([self.cur_positions, new_pts], axis=0)
-        elif len(new_pts) > 0:
-            combined = new_pts
-        elif len(self.cur_positions) > 0:
-            combined = self.cur_positions
-        else:
-            combined = np.zeros((0, 2), dtype=np.float32)
-        # New keyframe: kf_positions becomes the current positions; identity
-        # cur_to_kf_kf, reset counter.
-        self.kf_positions  = combined.copy()
-        self.cur_positions = combined.copy()
-        self.frames_since_kf = 0
-        self.prev_gray = cur_gray
-        return {"is_keyframe":        True,
-                "kf_to_cur":          _identity(),
-                "prev_kf_to_this_kf": (prev_kf_to_this_kf
-                                       if prev_kf_to_this_kf is not None
-                                       else _identity())}
 
     @staticmethod
     def _estimate_affine(src_pts: np.ndarray, dst_pts: np.ndarray):
