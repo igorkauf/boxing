@@ -16,7 +16,9 @@
       "Bash(git config *)",
       "Bash(brew install *)",
       "Bash(gh --version)",
-      "Bash(gh auth *)"
+      "Bash(gh auth *)",
+      "Bash(chmod +x test_harness.py)",
+      "Bash(./venv/bin/python test_harness.py --out snapshots/v0.2-peak-punches.csv)"
     ]
   }
 }
