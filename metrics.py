@@ -103,30 +103,41 @@ PUNCH_ACCEL_MIN     = 0.075   # body-relative wrist velocity per pose-frame.
 # PUNCH_PEAK_SEP_S between peaks. Each real punch produces one peak; slow
 # defensive motion produces low-amplitude signal that fails the threshold,
 # and motion away from the opponent gets suppressed by the direction factor.
-PUNCH_SCORE_MIN     = 0.060   # peak-score threshold. Re-calibrated under the
-                              # v3 punch_score formula (bbox-zoom-corrected
-                              # velocity + dir_floor=0.60). Minimizes total
-                              # absolute error vs ground-truth counts across
-                              # 7 clips with a 2.7× range of camera zoom
-                              # (fighter-height 0.26 → 0.70 of frame).
+PUNCH_SCORE_MIN     = 0.070   # peak-score threshold. Calibrated against the
+                              # LANDSCAPE / natural-framing regime (75ff0142,
+                              # box_test, box_gigguys, yellow, box_green) —
+                              # the representative production target. Social
+                              # vertical clips with padded borders (e.g.
+                              # overtimeboxing) are an outlier regime that
+                              # needs ROI/crop detection at the enrichment
+                              # stage, not threshold tuning.
 PUNCH_PEAK_SEP_S    = 0.18    # min time between detected peaks (fast 1-2
                               # combos sit around 0.2 s apart)
 RANGE_TRIGGER_SCALE = 2.6     # "in range" = opponent-distance <= this × scale-px
 ADVANCE_EPS_SCALE   = 0.005   # min per-frame closing speed (in scales) to count
 
-# Punch-score v3 knobs (calibrated to cross-clip ground-truth).
-PUNCH_DIR_FLOOR      = 0.60   # floor for the direction_factor — hooks
+# Punch-score v3 knobs (calibrated to landscape/ideal ground-truth).
+PUNCH_DIR_FLOOR      = 0.70   # floor for the direction_factor — hooks
                               # (perpendicular to me→op axis) used to get
                               # halved to 0.5; floor lets close-range curved
-                              # punches score on par with straights.
-PUNCH_BBOX_REF_H     = 0.55   # reference fighter-height (normalized).
-                              # Velocities on frames where the fighter is
-                              # smaller than this get scaled up so the score
-                              # distribution stays stable across camera-zoom
-                              # levels. Capped at 2× to avoid runaway.
-                              # Fighters LARGER than the reference get no
-                              # correction (their velocities are already
-                              # well-resolved by pixel count).
+                              # punches score on par with straights. Higher
+                              # floor also partly offsets the directional
+                              # noise from head-turning fighters on long
+                              # shots where me→op vector is uncertain.
+PUNCH_BBOX_REF_H     = 0.70   # reference fighter-height (normalized). When
+                              # fighter bbox-height is smaller than this,
+                              # velocity is scaled up by ref/bbox_h (capped
+                              # at PUNCH_ZOOM_CAP) so the score distribution
+                              # is comparable across camera-zoom levels. A
+                              # large-fighter recording (close camera) has
+                              # bbox_h ≈ 0.70; a long-shot gym recording
+                              # like 75ff0142 has bbox_h ≈ 0.36 and its
+                              # velocities compress ~2×. This correction
+                              # restores them. Fighters larger than the
+                              # reference get no correction.
+PUNCH_ZOOM_CAP       = 2.5    # cap on the zoom_boost multiplier. Protects
+                              # against runaway when bbox_h is tiny (failed
+                              # detection, edge-cropped fighter).
 
 # ── State classifier (Phase 2) ───────────────────────────────────────────────
 # Per-frame fighter-interaction state, used to blend per-state aggression
@@ -701,7 +712,7 @@ def _punch_score(kps, prev_kps, toward_dir, bbox=None):
     # bbox is smaller than the reference. No change for large fighters.
     if bbox is not None:
         bbox_h = max(bbox[3] - bbox[1], 0.10)
-        zoom_boost = (min(2.0, PUNCH_BBOX_REF_H / bbox_h)
+        zoom_boost = (min(PUNCH_ZOOM_CAP, PUNCH_BBOX_REF_H / bbox_h)
                       if bbox_h < PUNCH_BBOX_REF_H else 1.0)
     else:
         zoom_boost = 1.0
