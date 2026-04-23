@@ -112,6 +112,34 @@ PUNCH_PEAK_SEP_S    = 0.18    # min time between detected peaks (fast 1-2
 RANGE_TRIGGER_SCALE = 2.6     # "in range" = opponent-distance <= this × scale-px
 ADVANCE_EPS_SCALE   = 0.005   # min per-frame closing speed (in scales) to count
 
+# ── State classifier (Phase 2) ───────────────────────────────────────────────
+# Per-frame fighter-interaction state, used to blend per-state aggression
+# signals. The classifier is cheap — all inputs are already computed. Each
+# state picks a different formula because signal quality differs sharply:
+#   OPEN      — far apart, clear visibility; punch_score + closing are gold
+#   CLOSE     — infighting but still visible; punch_score noisy (hooks,
+#               short punches), so wrist_activity carries more weight
+#   CLINCH    — bodies tangled, 2D punch geometry unreliable; fall back to
+#               wrist_activity + body push
+#   OCCLUSION — one or both fighters not confidently visible; neither gets
+#               new credit, but the score decays toward 50/50 gradually
+STATE_OPEN              = "open"
+STATE_CLOSE             = "close"
+STATE_CLINCH            = "clinch"
+STATE_OCCLUSION         = "occlusion"
+STATE_CLINCH_IOU        = 0.40   # bbox overlap above this ⇒ CLINCH
+STATE_CLOSE_DIST_SCALES = 1.50   # inter-fighter distance (in median-scale
+                                 # units) below this (and not clinch) ⇒ CLOSE
+STATE_OCCL_KP_FRAC      = 0.40   # per-fighter keypoint-visibility fraction
+                                 # below which we call it OCCLUSION
+STATE_DECAY_TAU_S       = 2.5    # exponential decay time constant during
+                                 # OCCLUSION toward 50/50 — gentle, not snap.
+
+# Aggression blend weights per state.
+AGG_OPEN_W    = {"punch": 0.60, "close_retreat": 0.30, "op_retreat": 0.10}
+AGG_CLOSE_W   = {"wrist": 0.50, "punch": 0.30, "body_push": 0.20}
+AGG_CLINCH_W  = {"wrist": 0.60, "head_move": 0.20, "bbox_push": 0.20}
+
 # Tier → arena-component weight (body-relative components always = 1.0).
 TIER_WEIGHT = {
     "high":   1.00,
@@ -653,6 +681,84 @@ def _punch_score(kps, prev_kps, toward_dir):
     return best
 
 
+def _wrist_activity(kps, prev_kps):
+    """
+    Body-relative wrist-motion magnitude for one fighter in one frame.
+    Max over both wrists of:
+        || (wrist_t − shoulder_t) − (wrist_{t-1} − shoulder_{t-1}) ||
+
+    This is the "are the hands moving fast?" signal — unlike _punch_score
+    it does NOT require arm extension, does NOT require motion toward the
+    opponent, and so fires for hooks, short punches, body shots, clinch
+    work, parries, and defensive hand motion. Correct tool for CLOSE and
+    CLINCH states where _punch_score undercounts real punches (short range
+    means no extension; hooks curve so direction isn't "toward opponent").
+
+    Shoulder motion is subtracted so the fighter's own footwork doesn't
+    inflate the signal. Returns 0.0 if keypoints missing.
+    """
+    if kps is None or prev_kps is None:
+        return 0.0
+    sc = _shoulder_center(kps)
+    prev_sc = _shoulder_center(prev_kps)
+    if sc is None or prev_sc is None:
+        return 0.0
+    best = 0.0
+    for wi in (KP_WRIST_L, KP_WRIST_R):
+        w  = _kp(kps, wi)
+        pw = _kp(prev_kps, wi)
+        if w is None or pw is None:
+            continue
+        cur_rel  = (w[0]  - sc[0],      w[1]  - sc[1])
+        prev_rel = (pw[0] - prev_sc[0], pw[1] - prev_sc[1])
+        vmag = math.hypot(cur_rel[0] - prev_rel[0],
+                          cur_rel[1] - prev_rel[1])
+        if vmag > best:
+            best = vmag
+    return best
+
+
+def _kp_visibility(kps) -> float:
+    """Fraction of COCO-17 keypoints confident at or above KP_CONF."""
+    if not kps:
+        return 0.0
+    return _confident_kp_count(kps) / 17.0
+
+
+def _classify_state(my_kps, op_kps, my_bbox, op_bbox,
+                    my_to_op_scaled):
+    """
+    Classify one frame as OPEN / CLOSE / CLINCH / OCCLUSION.
+
+    Priority:
+      1. OCCLUSION if either fighter's keypoint visibility < threshold
+         (can't reliably score activity; carry-forward with decay)
+      2. CLINCH   if bbox IoU exceeds threshold (2D geometry unreliable,
+         fall back to activity-only signals)
+      3. CLOSE    if inter-fighter distance (in median-scale units) is
+         below threshold (infighting but still visible)
+      4. OPEN     otherwise
+
+    Inputs are what we already compute elsewhere, so this is cheap.
+    """
+    my_vis = _kp_visibility(my_kps)
+    op_vis = _kp_visibility(op_kps)
+    if my_vis < STATE_OCCL_KP_FRAC or op_vis < STATE_OCCL_KP_FRAC:
+        return STATE_OCCLUSION
+    if _bbox_iou(my_bbox, op_bbox) >= STATE_CLINCH_IOU:
+        return STATE_CLINCH
+    if (my_to_op_scaled is not None and
+            my_to_op_scaled < STATE_CLOSE_DIST_SCALES):
+        return STATE_CLOSE
+    return STATE_OPEN
+
+
+def _decay_toward_neutral(s_prev: float, dt: float,
+                          tau: float = STATE_DECAY_TAU_S) -> float:
+    """Exponential decay toward 50. s(t) = 50 + (s_prev − 50) × e^(−dt/τ)."""
+    return 50.0 + (s_prev - 50.0) * math.exp(-max(dt, 0.0) / max(tau, 1e-6))
+
+
 def _detect_punch_peaks(scores: list[float], fps: float,
                         min_score: float | None = None,
                         min_sep_s: float | None = None) -> list[int]:
@@ -746,6 +852,14 @@ def compute(session_dir: Path) -> dict:
     op_guard_px    = [None]  * n
     my_head_img    = [None]  * n
     op_head_img    = [None]  * n
+    # Phase 2 signals — needed by the per-state aggression blend.
+    my_wrist_act   = [0.0]   * n   # body-relative wrist-motion magnitude
+    op_wrist_act   = [0.0]   * n
+    my_bbox_push   = [0.0]   * n   # own-bbox-center displacement per frame
+    op_bbox_push   = [0.0]   * n
+    my_head_move   = [0.0]   * n   # own-head displacement per frame (body rel)
+    op_head_move   = [0.0]   * n
+    state          = [STATE_OCCLUSION] * n   # frame-level interaction state
 
     for i, f in enumerate(frames):
         my_kps = f.get("my_kps")
@@ -781,6 +895,34 @@ def compute(session_dir: Path) -> dict:
             return None if h is None else (h[0] * fw, h[1] * fh)
         my_head_img[i] = _hp(my_kps)
         op_head_img[i] = _hp(op_kps)
+
+        # Phase 2: wrist-activity (non-directional, non-extension-gated)
+        # and body/head push magnitudes for the per-state blend.
+        my_wrist_act[i] = _wrist_activity(my_kps, prev_my)
+        op_wrist_act[i] = _wrist_activity(op_kps, prev_op)
+        if my_center and prev:
+            prev_mc = _bbox_center_norm(prev.get("my_bbox"))
+            if prev_mc:
+                my_bbox_push[i] = math.hypot(my_center[0] - prev_mc[0],
+                                             my_center[1] - prev_mc[1])
+        if op_center and prev:
+            prev_oc = _bbox_center_norm(prev.get("op_bbox"))
+            if prev_oc:
+                op_bbox_push[i] = math.hypot(op_center[0] - prev_oc[0],
+                                             op_center[1] - prev_oc[1])
+        # Head displacement (body-relative by subtracting shoulder motion).
+        if i > 0 and my_head_img[i] is not None and my_head_img[i-1] is not None:
+            sc   = _shoulder_center(my_kps);     psc = _shoulder_center(prev_my)
+            if sc is not None and psc is not None:
+                dx = (my_head_img[i][0]/fw - sc[0]) - (my_head_img[i-1][0]/fw - psc[0])
+                dy = (my_head_img[i][1]/fh - sc[1]) - (my_head_img[i-1][1]/fh - psc[1])
+                my_head_move[i] = math.hypot(dx, dy)
+        if i > 0 and op_head_img[i] is not None and op_head_img[i-1] is not None:
+            sc   = _shoulder_center(op_kps);     psc = _shoulder_center(prev_op)
+            if sc is not None and psc is not None:
+                dx = (op_head_img[i][0]/fw - sc[0]) - (op_head_img[i-1][0]/fw - psc[0])
+                dy = (op_head_img[i][1]/fh - sc[1]) - (op_head_img[i-1][1]/fh - psc[1])
+                op_head_move[i] = math.hypot(dx, dy)
 
     # ── Per-frame arena signals ───────────────────────────────────────────
     # Distance each fighter is from the centroid (ref coords), in scale units.
@@ -818,6 +960,14 @@ def compute(session_dir: Path) -> dict:
                     my_closing[i] = closing * (my_mv / tot)
                     op_closing[i] = closing * (op_mv / tot)
 
+    # ── Per-frame state classification (Phase 2) ──────────────────────────
+    for i, f in enumerate(frames):
+        state[i] = _classify_state(
+            f.get("my_kps"), f.get("op_kps"),
+            f.get("my_bbox"), f.get("op_bbox"),
+            my_to_op[i] if i < len(my_to_op) else None,
+        )
+
     # ── Per-second aggregation ────────────────────────────────────────────
     duration_s = max(1, int(math.ceil(frames[-1].get("time_s", 0.0))) + 1)
     by_sec: dict[int, list[int]] = {}
@@ -845,32 +995,105 @@ def compute(session_dir: Path) -> dict:
                 my_ring_sec[s] = round(100 * me_closer / total)
                 op_ring_sec[s] = 100 - my_ring_sec[s]
 
-    # ── Metric 2: Effective Aggression (mixed) ─────────────────────────────
-    # Per second: (% frames with closing×punching) + partial credit for
-    # closing alone. Then normalize so ME + OP ≈ 100 at each second.
+    # ── Metric 2: Effective Aggression (state-aware, Phase 2) ──────────────
+    # Per frame, compute a raw aggression score per fighter using a blend
+    # chosen by the frame's state (OPEN / CLOSE / CLINCH / OCCLUSION). Then
+    # aggregate to a per-second percentage share between ME and OP.
+    #
+    # OPEN: punch_score + closing-forward + op-retreating. The "clean
+    #       distance" regime — _punch_score is reliable, so it carries most
+    #       of the weight; closing is the rest.
+    # CLOSE: wrist_activity takes over because short punches and hooks
+    #       don't produce extension/direction — _punch_score undercounts.
+    #       punch_score still contributes (clean short jabs still register)
+    #       but down-weighted.
+    # CLINCH: no punch_score at all; activity-only signals (wrist motion,
+    #       head motion, body pushing each other around). Whoever is
+    #       actively working gets the credit.
+    # OCCLUSION: no new credit; exponentially decay the last seen
+    #       per-second score toward 50/50 with τ = STATE_DECAY_TAU_S.
+
+    # Rough normalization constants for the three signals — keep each
+    # in roughly the same dynamic range so the weights above can be
+    # interpreted. Tuned against observed magnitudes in real clips.
+    PSCORE_NORM = 0.20   # typical punch_score peak ≈ 0.05–0.15
+    WACT_NORM   = 0.05   # typical wrist_activity peak ≈ 0.02–0.06
+    BPUSH_NORM  = 0.02   # typical per-frame bbox-center displacement
+    HMOVE_NORM  = 0.015  # typical head-relative motion
+
+    def _nrm(x, d):
+        return max(0.0, min(1.0, x / max(d, 1e-6)))
+
+    my_agg_frame = [0.0] * n
+    op_agg_frame = [0.0] * n
+
+    for i in range(n):
+        st = state[i]
+        if st == STATE_OPEN:
+            # Closing = own forward pressure; op-retreat is our fighter's
+            # pressure forcing the opponent back (distinct credit).
+            me_close = 1.0 if my_closing[i] > ADVANCE_EPS_SCALE else 0.0
+            op_close = 1.0 if op_closing[i] > ADVANCE_EPS_SCALE else 0.0
+            # "op retreating under ME's pressure" = ME moved forward while
+            # distance grew, OR OP moved backward (negative op_closing).
+            me_force_op_retreat = 1.0 if (op_closing[i] < -ADVANCE_EPS_SCALE) else 0.0
+            op_force_me_retreat = 1.0 if (my_closing[i] < -ADVANCE_EPS_SCALE) else 0.0
+            W = AGG_OPEN_W
+            my_agg_frame[i] = (W["punch"]         * _nrm(my_punch_score[i], PSCORE_NORM) +
+                               W["close_retreat"] * me_close +
+                               W["op_retreat"]    * me_force_op_retreat)
+            op_agg_frame[i] = (W["punch"]         * _nrm(op_punch_score[i], PSCORE_NORM) +
+                               W["close_retreat"] * op_close +
+                               W["op_retreat"]    * op_force_me_retreat)
+        elif st == STATE_CLOSE:
+            W = AGG_CLOSE_W
+            my_agg_frame[i] = (W["wrist"]    * _nrm(my_wrist_act[i], WACT_NORM) +
+                               W["punch"]    * _nrm(my_punch_score[i], PSCORE_NORM) +
+                               W["body_push"]* _nrm(my_bbox_push[i], BPUSH_NORM))
+            op_agg_frame[i] = (W["wrist"]    * _nrm(op_wrist_act[i], WACT_NORM) +
+                               W["punch"]    * _nrm(op_punch_score[i], PSCORE_NORM) +
+                               W["body_push"]* _nrm(op_bbox_push[i], BPUSH_NORM))
+        elif st == STATE_CLINCH:
+            W = AGG_CLINCH_W
+            my_agg_frame[i] = (W["wrist"]     * _nrm(my_wrist_act[i], WACT_NORM) +
+                               W["head_move"] * _nrm(my_head_move[i], HMOVE_NORM) +
+                               W["bbox_push"] * _nrm(my_bbox_push[i], BPUSH_NORM))
+            op_agg_frame[i] = (W["wrist"]     * _nrm(op_wrist_act[i], WACT_NORM) +
+                               W["head_move"] * _nrm(op_head_move[i], HMOVE_NORM) +
+                               W["bbox_push"] * _nrm(op_bbox_push[i], BPUSH_NORM))
+        # OCCLUSION handled at the per-second aggregation step (decay).
+
+    # Aggregate to per-second percentage share (ME vs OP). OCCLUSION seconds
+    # exponentially decay from the last non-occlusion second toward 50/50.
     my_agg_sec = [50] * duration_s
     op_agg_sec = [50] * duration_s
+    last_nonoccl_s = -1
     for s in range(duration_s):
         idxs = by_sec.get(s, [])
         if not idxs:
             continue
-        me_score = 0.0
-        op_score = 0.0
-        for i in idxs:
-            # Arena-dependent: closing contributes weighted by tier.
-            if my_closing[i] > ADVANCE_EPS_SCALE:
-                me_score += 0.6 * tier_weight
-            if op_closing[i] > ADVANCE_EPS_SCALE:
-                op_score += 0.6 * tier_weight
-            # Body-relative: punching contributes at full weight.
-            if my_punch[i]:
-                me_score += 1.0 * (1.4 if my_closing[i] > ADVANCE_EPS_SCALE else 1.0)
-            if op_punch[i]:
-                op_score += 1.0 * (1.4 if op_closing[i] > ADVANCE_EPS_SCALE else 1.0)
-        tot = me_score + op_score
+        # What fraction of this second was OCCLUSION?
+        n_occl = sum(1 for i in idxs if state[i] == STATE_OCCLUSION)
+        occl_frac = n_occl / max(len(idxs), 1)
+
+        if occl_frac >= 0.5:
+            # Mostly occluded — decay from last known non-occlusion second.
+            if last_nonoccl_s >= 0:
+                dt = s - last_nonoccl_s
+                my_agg_sec[s] = round(_decay_toward_neutral(my_agg_sec[last_nonoccl_s], dt))
+                op_agg_sec[s] = 100 - my_agg_sec[s]
+            # else: leaves default 50/50, which is correct (no prior signal)
+            continue
+
+        # Normal blend: sum per-frame scores across the second (exclude
+        # OCCLUSION frames from the numerator/denominator).
+        me_sum = sum(my_agg_frame[i] for i in idxs if state[i] != STATE_OCCLUSION)
+        op_sum = sum(op_agg_frame[i] for i in idxs if state[i] != STATE_OCCLUSION)
+        tot = me_sum + op_sum
         if tot > 1e-6:
-            my_agg_sec[s] = round(100 * me_score / tot)
+            my_agg_sec[s] = round(100 * me_sum / tot)
             op_agg_sec[s] = 100 - my_agg_sec[s]
+            last_nonoccl_s = s
 
     # ── Metric 3: Movement (arena-only) ────────────────────────────────────
     # Pure footwork/engine: path length per second (in scales), no punch
@@ -1040,6 +1263,28 @@ def compute(session_dir: Path) -> dict:
     (my_lh, my_lb, my_miss, my_unk, my_acc) = _tally(my_events)
     (op_lh, op_lb, op_miss, op_unk, op_acc) = _tally(op_events)
 
+    # ── State-share (Phase 2 "clip makeup") ─────────────────────────────────
+    # Percentage of clip time in each interaction state. Useful for:
+    #   • surfaces on the UI as top-line context ("55% open, 30% close...")
+    #   • coaches / highlight generation can key off "stuck in clinch"
+    #   • future defense refinement can ask "was fighter X trapped?"
+    state_per_sec = [STATE_OPEN] * duration_s
+    state_counts  = {STATE_OPEN: 0, STATE_CLOSE: 0,
+                     STATE_CLINCH: 0, STATE_OCCLUSION: 0}
+    for s in range(duration_s):
+        idxs = by_sec.get(s, [])
+        if not idxs:
+            continue
+        # Mode within the second — majority wins.
+        counts = {}
+        for i in idxs:
+            counts[state[i]] = counts.get(state[i], 0) + 1
+        state_per_sec[s] = max(counts, key=counts.get)
+    for s in state_per_sec:
+        state_counts[s] = state_counts.get(s, 0) + 1
+    total = max(1, sum(state_counts.values()))
+    state_share = {k: round(100 * v / total) for k, v in state_counts.items()}
+
     return {
         "ok":              True,
         "duration_s":      duration_s,
@@ -1062,19 +1307,29 @@ def compute(session_dir: Path) -> dict:
         "my_punches":      my_punches_total,
         "op_punches":      op_punches_total,
 
-        # Phase 1 landed-hit gating.
+        # State classifier (Phase 2). Per-second label + overall share.
+        # Fed to the Lab's state swimlane and state-breakdown stat.
+        "state_share":     state_share,      # {"open": 55, "close": 30, ...}
+
+        # ── Landed-hit gating (Phase 1, DEPRECATED for headline metrics) ──
+        # Kept in the result for debugging/research but NOT surfaced in the
+        # UI or harness. The 2D glove-in-zone heuristic couldn't cleanly
+        # separate contact from close-range proximity; Phase 2's state-
+        # aware Aggression captures close-range credit without needing a
+        # landed/missed call. Uncomment UI wiring + harness columns to
+        # revive if a future approach (depth estimation, 3D reconstruction,
+        # wrist-velocity-profile matching) gives reliable per-hit verdicts.
         "my_landed_head":  my_lh,
         "my_landed_body":  my_lb,
         "my_missed":       my_miss,
         "my_unknown":      my_unk,
-        "my_accuracy":     my_acc,    # None if 0 decisive punches
+        "my_accuracy":     my_acc,
         "op_landed_head":  op_lh,
         "op_landed_body":  op_lb,
         "op_missed":       op_miss,
         "op_unknown":      op_unk,
         "op_accuracy":     op_acc,
-
-        "my_landed_events": my_events,   # [{fi,t,verdict,wrist,head_box,stom_box}]
+        "my_landed_events": my_events,
         "op_landed_events": op_events,
 
         "series": {
@@ -1090,6 +1345,7 @@ def compute(session_dir: Path) -> dict:
             "op_defense":    op_def_sec,
             "my_guard":      my_guard_sec,
             "op_guard":      op_guard_sec,
+            "state":         state_per_sec,     # Phase 2: per-second label
         },
     }
 

@@ -615,6 +615,30 @@
       </div>
       {% endfor %}
 
+      <!-- State timeline (Phase 2) — shows what kind of exchange each
+           second was, color-coded. Lets the user spot "stuck in clinch"
+           periods at a glance. The actual bars are rendered in JS via the
+           `series.state` array. -->
+      {% if am.series.state %}
+      <div style="margin-top:18px;margin-bottom:6px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;font-size:12px;">
+          <span style="font-weight:700;color:var(--text);">STATE TIMELINE</span>
+          <span style="color:var(--muted);font-size:11px;">
+            {% set ss = am.state_share %}
+            open {{ ss.open or 0 }}% · close {{ ss.close or 0 }}% ·
+            clinch {{ ss.clinch or 0 }}% · occluded {{ ss.occlusion or 0 }}%
+          </span>
+        </div>
+        <div style="height:16px;border-radius:3px;overflow:hidden;" id="state-timeline"></div>
+        <div style="display:flex;gap:14px;margin-top:4px;font-size:10px;color:var(--muted);">
+          <span><span style="display:inline-block;width:10px;height:10px;background:#4ab56f;border-radius:2px;margin-right:4px;"></span>open</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:#d4a544;border-radius:2px;margin-right:4px;"></span>close</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:#c74343;border-radius:2px;margin-right:4px;"></span>clinch</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:#555;border-radius:2px;margin-right:4px;"></span>occluded</span>
+        </div>
+      </div>
+      {% endif %}
+
       <!-- Bottom stats row -->
       <div class="stats-row" style="margin-top:16px;">
         <div class="stat-box">
@@ -690,10 +714,12 @@
       if (!stagesEl || !gridEl) return;
 
       const STAGES = [
-        { id: 'punch_peaks',   label: 'Punch peaks (one per landed-hit verdict)' },
         { id: 'arena',         label: 'Arena (motion-compensated)' },
         { id: 'arena_heatmap', label: 'Arena heatmap' },
         { id: 'baseline',      label: 'Baseline (boxes + target zones)' },
+        // 'punch_peaks' stage disabled alongside the Phase 1 landed-hit
+        // removal — unreliable close-range verdicts made the gallery
+        // misleading. Re-enable if landed-hit is revived.
       ];
       let currentStage = null;
 
@@ -1830,6 +1856,29 @@
     mk('am-volume-chart',     series.my_volume,     series.op_volume);
     mk('am-defense-chart',    series.my_defense,    series.op_defense);
     mk('am-guard-chart',      series.my_guard,      series.op_guard);
+
+    // State timeline (Phase 2). Simple DIV-per-second color strip — no
+    // Chart.js, just a row of colored blocks so the user can see at a
+    // glance when each second was open/close/clinch/occluded.
+    if (series.state && Array.isArray(series.state)) {
+      const stColors = {
+        open:      '#4ab56f',
+        close:     '#d4a544',
+        clinch:    '#c74343',
+        occlusion: '#555',
+      };
+      const bar = document.getElementById('state-timeline');
+      if (bar) {
+        bar.style.display = 'flex';
+        bar.style.width   = '100%';
+        for (const st of series.state) {
+          const seg = document.createElement('div');
+          seg.style.cssText = `flex:1;background:${stColors[st] || '#555'};`;
+          seg.title = st;
+          bar.appendChild(seg);
+        }
+      }
+    }
 
     // Playhead sync: update every chart when the main result video scrubs.
     const rv = document.getElementById('result-video');

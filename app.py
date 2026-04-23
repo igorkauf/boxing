@@ -1428,17 +1428,18 @@ def _run_pose_enrichment(sid):
             except Exception as _e:
                 print(f"[enrichment] Baseline screenshots failed (non-fatal): {_e}")
 
-            # Punch-peak screenshots — one frame per landed-hit candidate so
-            # the user can eyeball every verdict in order. Much better UX than
-            # hunting for red flashes in live video.
-            if arena_metrics_result:
-                try:
-                    peaks_dir = sess_dir(sid) / "screenshots" / "punch_peaks"
-                    n = screenshots.render_punch_peaks(
-                        vpath, enriched, arena_metrics_result, peaks_dir)
-                    print(f"[enrichment] wrote {n} punch-peak screenshots to {peaks_dir}")
-                except Exception as _e:
-                    print(f"[enrichment] Punch-peak screenshots failed (non-fatal): {_e}")
+            # Punch-peak screenshots disabled (Phase 2). See
+            # diagnostics merge-landed-hits comment above for rationale.
+            # Uncomment to revive:
+            #
+            # if arena_metrics_result:
+            #     try:
+            #         peaks_dir = sess_dir(sid) / "screenshots" / "punch_peaks"
+            #         n = screenshots.render_punch_peaks(
+            #             vpath, enriched, arena_metrics_result, peaks_dir)
+            #         print(f"[enrichment] wrote {n} punch-peak screenshots to {peaks_dir}")
+            #     except Exception as _e:
+            #         print(f"[enrichment] Punch-peak screenshots failed (non-fatal): {_e}")
         else:
             print(f"[enrichment] arena detection failed: {arena.get('error')}")
     except Exception as _e:
@@ -4535,17 +4536,21 @@ def _rebuild_session_diagnostics(sid: str) -> None:
         except Exception as e:
             print(f"[diag] merge arena failed: {e}")
 
-    # Target zones + landed-hit flashes — requires sam2_enriched + metrics.
-    enriched_path = session_dir / "sam2_enriched.json"
-    metrics_path  = session_dir / "arena_metrics.json"
-    if enriched_path.exists() and metrics_path.exists():
-        try:
-            enriched = json.loads(enriched_path.read_text())
-            arena_metrics = json.loads(metrics_path.read_text())
-            if arena_metrics.get("ok"):
-                diagnostics.merge_landed_hits(bundle, enriched, arena_metrics)
-        except Exception as e:
-            print(f"[diag] merge landed hits failed: {e}")
+    # Landed-hit zones disabled (Phase 2) — close-range 2D verdict was
+    # unreliable and cluttered the overlay. State-aware Aggression already
+    # captures the aggression signal without needing per-hit classification.
+    # Uncomment the block below to revive:
+    #
+    # enriched_path = session_dir / "sam2_enriched.json"
+    # metrics_path  = session_dir / "arena_metrics.json"
+    # if enriched_path.exists() and metrics_path.exists():
+    #     try:
+    #         enriched = json.loads(enriched_path.read_text())
+    #         arena_metrics = json.loads(metrics_path.read_text())
+    #         if arena_metrics.get("ok"):
+    #             diagnostics.merge_landed_hits(bundle, enriched, arena_metrics)
+    #     except Exception as e:
+    #         print(f"[diag] merge landed hits failed: {e}")
 
     try:
         bundle_path.write_text(json.dumps(bundle, separators=(",", ":")))
