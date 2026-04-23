@@ -5507,8 +5507,12 @@ def _run_sam2_correction(sid):
     existing_out = str(sess_dir(sid) / "sam2_test.mp4")
     out_json     = str(sess_dir(sid) / "sam2_test_status.json")
     out_progress = str(sess_dir(sid) / "sam2_test_progress.json")
-    out_track    = str(sess_dir(sid) / "sam2_track.json")   # overwrite with corrected tracking data
-    log_path     = str(sess_dir(sid) / "sam2_correction.log")
+    # Correction writes to a SEPARATE track sidecar so we don't lose pre-
+    # correction tracking. Merged into sam2_track.json after the run —
+    # pre-correction frames from the original, post-correction from new.
+    existing_track = str(sess_dir(sid) / "sam2_track.json")
+    new_track      = str(sess_dir(sid) / "sam2_track_correction.json")
+    log_path       = str(sess_dir(sid) / "sam2_correction.log")
 
     def _ffmpeg(*args):
         """Run an ffmpeg command, return True on success."""
@@ -5585,7 +5589,7 @@ def _run_sam2_correction(sid):
         cmd += ["--op_box", f"{op_box[0]},{op_box[1]},{op_box[2]},{op_box[3]}"]
     if kf_path and Path(kf_path).exists():
         cmd += ["--yolo_kf", kf_path]
-    cmd += ["--track_json", out_track]   # overwrite sidecar with corrected tracking data
+    cmd += ["--track_json", new_track]   # write correction run's tracks separately
 
     stderr_lines = []
     def _drain(proc, log_file):
@@ -5640,7 +5644,42 @@ def _run_sam2_correction(sid):
             try: Path(tmp).unlink(missing_ok=True)
             except Exception: pass
 
-        # ── Step 6: update meta ───────────────────────────────────────────────
+        # ── Step 6: merge tracking sidecars (pre-correction + new) ───────────
+        # Without this, re-running from seed_fi=N overwrites sam2_track.json
+        # and wipes out pre-correction tracking (enrichment sees 0→N with
+        # my_bbox=None, op_bbox=None). Now we keep raw_fi < correction_raw_fi
+        # entries from the original file and splice in the new run's data
+        # from correction_raw_fi onward.
+        try:
+            old_tracks = json.loads(Path(existing_track).read_text()) \
+                if Path(existing_track).exists() else []
+            new_tracks = json.loads(Path(new_track).read_text()) \
+                if Path(new_track).exists() else []
+
+            # Keep original entries from before the correction point.
+            kept = [t for t in old_tracks
+                    if t.get("raw_fi", 0) < correction_raw_fi]
+            # Use new entries from correction point onward — but only those
+            # with non-None tracking (pre-seed frames in the correction run
+            # are written as None for 0→correction_fi and we don't want them).
+            added = [t for t in new_tracks
+                     if t.get("raw_fi", 0) >= correction_raw_fi
+                        and (t.get("my_bbox") is not None or
+                             t.get("op_bbox") is not None)]
+            merged = kept + added
+            # Ensure chronological order (the merge keeps order but be safe).
+            merged.sort(key=lambda t: t.get("raw_fi", 0))
+            Path(existing_track).write_text(json.dumps(merged))
+            print(f"[lab_correct] merged tracks: "
+                  f"{len(kept)} pre-correction + {len(added)} corrected "
+                  f"= {len(merged)} total  (before {correction_raw_fi})")
+        except Exception as _merge_err:
+            print(f"[lab_correct] track merge failed: {_merge_err}")
+        # Clean up the partial correction track file.
+        try: Path(new_track).unlink(missing_ok=True)
+        except Exception: pass
+
+        # ── Step 7: update meta ───────────────────────────────────────────────
         result = {}
         try:
             result = json.loads(Path(out_json).read_text())
