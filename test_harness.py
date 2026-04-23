@@ -49,6 +49,13 @@ METRIC_FIELDS = [
     "my_defense", "op_defense",
     "my_guard", "op_guard",
     "my_punches", "op_punches",
+    # Landed-hit gating (Phase 1) — diffs here tell us if zone geometry or
+    # the per-peak verdict changed behavior between runs.
+    "my_landed_head", "op_landed_head",
+    "my_landed_body", "op_landed_body",
+    "my_missed",      "op_missed",
+    "my_unknown",     "op_unknown",
+    "my_accuracy",    "op_accuracy",
 ]
 
 CSV_FIELDS = [

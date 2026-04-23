@@ -30,12 +30,24 @@ COL_ME = "#ff8c00"   # orange
 COL_OP = "#3c8ddc"   # blue
 COL_NEUTRAL = "#888888"
 
+# Landed-hit zone colors (drawn over the opponent's head + stomach).
+COL_ZONE_OK   = "#2ecc71"   # green — zone computable this frame
+COL_ZONE_HIT  = "#ff2222"   # red   — a landed punch reached this zone
+
 
 def build_layers_from_enriched(enriched: dict) -> dict[str, Any]:
     """
     Turn sam2_enriched.json into the layer bundle the viewer consumes.
-    Currently emits two layers ("boxes" and "skeleton") as the "baseline"
-    view of what the existing pipeline sees. Later stages will append more.
+
+    Layers emitted:
+      - boxes       : fighter bboxes, default on
+      - clinch      : occlusion/clinch text flag, default off
+      - reid_swaps  : rare re-ID swap events, sparse default on
+
+    The pose skeleton layer was removed in favor of the target-zones layer
+    (added separately by merge_landed_hits after metrics.compute runs) —
+    skeletons cluttered the view without adding validation value once the
+    zones became the primary thing to eyeball.
     """
     frames = enriched.get("frames", [])
     fps_pose = enriched.get("fps_pose", 15.0)
@@ -43,13 +55,11 @@ def build_layers_from_enriched(enriched: dict) -> dict[str, Any]:
     fh = enriched.get("frame_h", 0)
 
     boxes_frames = []
-    skel_frames = []
     clinch_frames = []
 
     for f in frames:
         t = f.get("time_s", 0.0)
         box_items = []
-        skel_items = []
 
         for pfx, col, label in (("my", COL_ME, "ME"), ("op", COL_OP, "OP")):
             bb = f.get(f"{pfx}_bbox")
@@ -60,16 +70,8 @@ def build_layers_from_enriched(enriched: dict) -> dict[str, Any]:
                     "color": col,
                     "label": label,
                 })
-            kps = f.get(f"{pfx}_kps")
-            if kps:
-                skel_items.append({
-                    "type": "skeleton",
-                    "kps": kps,
-                    "color": col,
-                })
 
         boxes_frames.append({"t": t, "items": box_items})
-        skel_frames.append({"t": t, "items": skel_items})
 
         if f.get("clinch"):
             clinch_frames.append({"t": t, "items": [
@@ -99,11 +101,6 @@ def build_layers_from_enriched(enriched: dict) -> dict[str, Any]:
                 "label": "Fighter boxes",
                 "default_on": True,
                 "frames": boxes_frames,
-            },
-            "skeleton": {
-                "label": "Pose skeleton",
-                "default_on": True,
-                "frames": skel_frames,
             },
             "clinch": {
                 "label": "Clinch flag",
@@ -276,4 +273,113 @@ def merge_arena(bundle: dict, arena: dict) -> None:
         "label":      f"Arena ({tier})",
         "default_on": True,
         "frames":     frames,
+    }
+
+
+# ── Target zones layer (Phase 1 landed-hit gating) ──────────────────────────
+def merge_landed_hits(bundle: dict,
+                      enriched: dict,
+                      arena_metrics: dict) -> None:
+    """
+    Add a "zones" layer drawing each fighter's head + stomach target
+    rectangles, green by default and red for LANDED_HIT_RED_FRAMES frames
+    centered on each landed-hit event.
+
+    Inputs:
+      enriched      — sam2_enriched.json (per-frame poses)
+      arena_metrics — metrics.compute() result with my_landed_events +
+                      op_landed_events attached
+
+    Landed-hit semantics:
+      ME's landed event flashes the OPPONENT's zone(s) red (target of the
+      punch lights up). OP's landed event flashes MY zone(s) red.
+    """
+    # Import lazily to avoid circular import (metrics reads this file's ctx).
+    import metrics as _metrics
+
+    frames = enriched.get("frames") or []
+    if not frames:
+        return
+    fps = float(enriched.get("fps_pose") or bundle.get("fps_pose") or 15.0)
+    red_window = _metrics.LANDED_HIT_RED_FRAMES
+
+    # Build per-frame sets of "target fighter zone(s) hit this frame".
+    # Keyed by (fighter_prefix, zone_name) → set of frame indices within the
+    # red window of any landed hit on that fighter/zone.
+    red_on: dict[tuple[str, str], set[int]] = {
+        ("my", "head"): set(), ("my", "stom"): set(),
+        ("op", "head"): set(), ("op", "stom"): set(),
+    }
+
+    # ME's hits target OP's zones.
+    for ev in arena_metrics.get("my_landed_events", []):
+        fi = ev["fi"]
+        v  = ev["verdict"]
+        if v == "landed_head":
+            red_on[("op", "head")].update(range(fi - red_window // 2,
+                                                fi + red_window // 2 + 1))
+        elif v == "landed_body":
+            red_on[("op", "stom")].update(range(fi - red_window // 2,
+                                                fi + red_window // 2 + 1))
+
+    # OP's hits target ME's zones.
+    for ev in arena_metrics.get("op_landed_events", []):
+        fi = ev["fi"]
+        v  = ev["verdict"]
+        if v == "landed_head":
+            red_on[("my", "head")].update(range(fi - red_window // 2,
+                                                fi + red_window // 2 + 1))
+        elif v == "landed_body":
+            red_on[("my", "stom")].update(range(fi - red_window // 2,
+                                                fi + red_window // 2 + 1))
+
+    zone_frames = []
+    for fi, f in enumerate(frames):
+        t = float(f.get("time_s", fi / fps))
+        items = []
+        for pfx in ("my", "op"):
+            kps = f.get(f"{pfx}_kps")
+            if not kps:
+                continue
+            head = _metrics._head_zone(kps)
+            stom = _metrics._stomach_zone(kps)
+            if head is not None:
+                color = COL_ZONE_HIT if fi in red_on[(pfx, "head")] else COL_ZONE_OK
+                items.append({
+                    "type":  "box",
+                    "box":   [float(head[0]), float(head[1]),
+                              float(head[2]), float(head[3])],
+                    "color": color,
+                })
+            if stom is not None:
+                color = COL_ZONE_HIT if fi in red_on[(pfx, "stom")] else COL_ZONE_OK
+                items.append({
+                    "type":  "box",
+                    "box":   [float(stom[0]), float(stom[1]),
+                              float(stom[2]), float(stom[3])],
+                    "color": color,
+                })
+        zone_frames.append({"t": t, "items": items})
+
+    # Optional summary badge: counts in the corner.
+    my_lh = arena_metrics.get("my_landed_head", 0)
+    my_lb = arena_metrics.get("my_landed_body", 0)
+    op_lh = arena_metrics.get("op_landed_head", 0)
+    op_lb = arena_metrics.get("op_landed_body", 0)
+    my_acc = arena_metrics.get("my_accuracy")
+    op_acc = arena_metrics.get("op_accuracy")
+    badge_text = (f"LANDED  ME {my_lh}H+{my_lb}B "
+                  f"({my_acc if my_acc is not None else '—'}%)  "
+                  f"OP {op_lh}H+{op_lb}B "
+                  f"({op_acc if op_acc is not None else '—'}%)")
+    for fr in zone_frames:
+        fr["items"].append({
+            "type": "text", "xy": [0.02, 0.22],
+            "text": badge_text, "color": "#ffffff",
+        })
+
+    bundle["layers"]["zones"] = {
+        "label":      "Target zones (head + stomach)",
+        "default_on": True,
+        "frames":     zone_frames,
     }

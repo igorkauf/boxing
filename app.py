@@ -1373,14 +1373,8 @@ def _run_pose_enrichment(sid):
     except Exception as _e:
         print(f"[enrichment] Diagnostics build failed (non-fatal): {_e}")
 
-    # Baseline screenshots — session-scoped (depends on user's pick, so keyed
-    # by sid rather than video hash).
-    try:
-        shots_dir = sess_dir(sid) / "screenshots" / "baseline"
-        n = screenshots.render_baseline(vpath, enriched, shots_dir, n=12)
-        print(f"[enrichment] wrote {n} baseline screenshots to {shots_dir}")
-    except Exception as _e:
-        print(f"[enrichment] Baseline screenshots failed (non-fatal): {_e}")
+    # Baseline screenshots rendered later (after metrics) so target zones and
+    # landed-hit red flashes can be drawn.
 
     # Arena detection — motion-compensated, built from SAM2-tracked feet.
     # Session-scoped because it depends on the user's picked identities.
@@ -1404,20 +1398,35 @@ def _run_pose_enrichment(sid):
                   f"wrote {n} arena + {nh} heatmap screenshots")
 
             # Compute the five arena-aware metrics, weighted by tier.
+            arena_metrics_result = None
             try:
                 m = arena_metrics_mod.compute_and_save(sess_dir(sid))
                 if m.get("ok"):
+                    arena_metrics_result = m
                     meta = read_meta(sid) or {}
                     meta["arena_metrics"] = m
                     write_meta(sid, meta)
                     print(f"[enrichment] metrics  ring={m['my_ring']}/{m['op_ring']}"
                           f"  aggr={m['my_aggression']}/{m['op_aggression']}"
-                          f"  work={m['my_work_rate']}/{m['op_work_rate']}"
+                          f"  mov={m['my_movement']}/{m['op_movement']}"
+                          f"  vol={m['my_volume']}/{m['op_volume']}"
                           f"  def={m['my_defense']}/{m['op_defense']}"
                           f"  guard={m['my_guard']}/{m['op_guard']}"
-                          f"  punches={m['my_punches']}/{m['op_punches']}")
+                          f"  punches={m['my_punches']}/{m['op_punches']}"
+                          f"  landed me={m['my_landed_head']}H+{m['my_landed_body']}B"
+                          f"  op={m['op_landed_head']}H+{m['op_landed_body']}B")
             except Exception as _me:
                 print(f"[enrichment] Arena metrics failed (non-fatal): {_me}")
+
+            # Baseline screenshots — now with target zones + landed-hit flashes.
+            try:
+                shots_dir = sess_dir(sid) / "screenshots" / "baseline"
+                n = screenshots.render_baseline(vpath, enriched, shots_dir,
+                                                n=12,
+                                                arena_metrics=arena_metrics_result)
+                print(f"[enrichment] wrote {n} baseline screenshots to {shots_dir}")
+            except Exception as _e:
+                print(f"[enrichment] Baseline screenshots failed (non-fatal): {_e}")
         else:
             print(f"[enrichment] arena detection failed: {arena.get('error')}")
     except Exception as _e:
@@ -4487,20 +4496,43 @@ def _rebuild_session_diagnostics(sid: str) -> None:
     """
     session_dir = sess_dir(sid)
 
-    # Start from whatever baseline diagnostics we have (boxes + skeleton).
+    # Start from whatever baseline diagnostics we have (fighter boxes).
     diagnostics.refresh_from_enriched(session_dir)
+
+    bundle_path = session_dir / "diagnostics.json"
+    if not bundle_path.exists():
+        return
+    try:
+        bundle = json.loads(bundle_path.read_text())
+    except Exception as e:
+        print(f"[diag] read bundle failed: {e}")
+        return
 
     # Arena overlay — merge in if computed for this session.
     arena_path = session_dir / "arena.json"
-    bundle_path = session_dir / "diagnostics.json"
-    if arena_path.exists() and bundle_path.exists():
+    if arena_path.exists():
         try:
-            bundle = json.loads(bundle_path.read_text())
-            arena  = json.loads(arena_path.read_text())
+            arena = json.loads(arena_path.read_text())
             diagnostics.merge_arena(bundle, arena)
-            bundle_path.write_text(json.dumps(bundle, separators=(",", ":")))
         except Exception as e:
             print(f"[diag] merge arena failed: {e}")
+
+    # Target zones + landed-hit flashes — requires sam2_enriched + metrics.
+    enriched_path = session_dir / "sam2_enriched.json"
+    metrics_path  = session_dir / "arena_metrics.json"
+    if enriched_path.exists() and metrics_path.exists():
+        try:
+            enriched = json.loads(enriched_path.read_text())
+            arena_metrics = json.loads(metrics_path.read_text())
+            if arena_metrics.get("ok"):
+                diagnostics.merge_landed_hits(bundle, enriched, arena_metrics)
+        except Exception as e:
+            print(f"[diag] merge landed hits failed: {e}")
+
+    try:
+        bundle_path.write_text(json.dumps(bundle, separators=(",", ":")))
+    except Exception as e:
+        print(f"[diag] write bundle failed: {e}")
 
 
 @app.route("/lab/video/<sid>")

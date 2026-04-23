@@ -41,6 +41,34 @@ KP_HIP_R            = 12
 KP_NOSE             = 0
 KP_EYE_L            = 1
 KP_EYE_R            = 2
+KP_EAR_L            = 3
+KP_EAR_R            = 4
+KP_ELBOW_L          = 7
+KP_ELBOW_R          = 8
+
+# ── Landed-hit gating (Phase 1) ──────────────────────────────────────────────
+# Target zones follow boxing convention: head = chin-to-crown square (helmet-
+# sized), stomach = belt-to-nipples square (~torso-width). Both derived from
+# pose keypoints in normalized [0,1] coords. When the required keypoints
+# aren't visible at the peak frame, the punch verdict is UNKNOWN (not MISSED)
+# because turns/clinches genuinely occlude the target.
+LANDED_HIT_RED_FRAMES = 5      # how many frames a zone flashes red on a hit
+HIT_WRIST_PAD_NORM    = 0.015  # dilation of zone test box (glove radius,
+                               # normalized). A typical boxing glove is ~12cm
+                               # — on a vertical-video frame that's 2-3% of
+                               # frame width. Combined with glove-tip
+                               # extrapolation below, this covers the glove
+                               # reaching the target even when the wrist kp
+                               # hasn't quite entered the zone yet.
+HIT_GLOVE_EXT_NORM    = 0.35   # fraction of the forearm vector (elbow→wrist)
+                               # to extrapolate beyond the wrist to estimate
+                               # the glove tip. Forearm ≈ 25-30cm, glove tip
+                               # is ~8-10cm beyond wrist → 0.30-0.40 of
+                               # forearm length.
+HEAD_TOP_PAD_EARS     = 0.4    # extend top of head above ears by 0.4 × ear-
+                               # spacing, rough helmet crown allowance
+HEAD_CHIN_FROM_NOSE   = 1.0    # chin ≈ nose_y + 1.0 × (nose_y − eye_y)
+STOMACH_TOP_FRAC      = 0.25   # nipples ≈ shoulder_y + 0.25 × (hip_y − sh_y)
 
 # 1€ filter defaults (see OneEuroFilter). Tuned for pose at ~15 fps with
 # heavy enough β to let real punches pass through — wrist keypoints move
@@ -310,6 +338,222 @@ def _bbox_center_norm(bbox):
     if not bbox:
         return None
     return (0.5 * (bbox[0] + bbox[2]), 0.5 * (bbox[1] + bbox[3]))
+
+
+# ── Landed-hit zones ─────────────────────────────────────────────────────────
+def _head_zone(kps):
+    """
+    Opponent's legal head target: square, chin-to-crown, helmet-sized.
+    Returns (x1, y1, x2, y2) in normalized coords, or None if keypoints
+    insufficient (occlusion → verdict becomes UNKNOWN).
+
+    Construction strategy — robust to profile views where only one eye/ear
+    is confident. Anchored on SHOULDERS (almost always visible) for sizing,
+    with facial keypoints used only for precise x-centering:
+
+      torso_h       = dist(shoulder_center, hip_center)  [or shoulder_spacing if hips missing]
+      head_h        = 0.30 × torso_h     (helmet-sized, a bit larger than face)
+      head_bottom_y = shoulder_center_y − 0.04 × torso_h   (just above shoulder line)
+      head_top_y    = head_bottom_y − head_h
+      cx            = nose / one-ear / eye-midpoint / shoulder-midpoint (fallback chain)
+      width = height (square)
+
+    Returns None only when we have no shoulder reference AT ALL — in that
+    case the verdict becomes UNKNOWN, which is what we want for heavy
+    occlusion.
+    """
+    sh_l = _kp(kps, KP_SHOULDER_L)
+    sh_r = _kp(kps, KP_SHOULDER_R)
+    if sh_l is None and sh_r is None:
+        return None
+    if sh_l is not None and sh_r is not None:
+        sh_cx = 0.5 * (sh_l[0] + sh_r[0])
+        sh_cy = 0.5 * (sh_l[1] + sh_r[1])
+        sh_spacing = abs(sh_l[0] - sh_r[0])
+    else:
+        sh = sh_l or sh_r
+        sh_cx, sh_cy = sh[0], sh[1]
+        sh_spacing = 0.05   # profile view fallback
+
+    hp_l = _kp(kps, KP_HIP_L)
+    hp_r = _kp(kps, KP_HIP_R)
+    hip_mid = _midpoint(hp_l, hp_r)
+    if hip_mid is not None:
+        torso_h = abs(hip_mid[1] - sh_cy)
+    else:
+        # Estimate torso height from shoulder spacing. Boxer torso is roughly
+        # 2× shoulder spacing tall.
+        torso_h = 2.0 * sh_spacing
+
+    if torso_h < 0.04:       # degenerate / tiny figure
+        return None
+
+    head_h        = 0.30 * torso_h
+    head_bottom_y = sh_cy  - 0.04 * torso_h
+    head_top_y    = head_bottom_y - head_h
+
+    # Lateral center: prefer facial keypoints, fall back to shoulder center.
+    nose  = _kp(kps, KP_NOSE)
+    eye_l = _kp(kps, KP_EYE_L)
+    eye_r = _kp(kps, KP_EYE_R)
+    ear_l = _kp(kps, KP_EAR_L)
+    ear_r = _kp(kps, KP_EAR_R)
+
+    if nose is not None:
+        cx = nose[0]
+    elif eye_l is not None and eye_r is not None:
+        cx = 0.5 * (eye_l[0] + eye_r[0])
+    elif ear_l is not None and ear_r is not None:
+        cx = 0.5 * (ear_l[0] + ear_r[0])
+    elif ear_l is not None or ear_r is not None or \
+         eye_l is not None or eye_r is not None:
+        # One-sided profile: head is offset from shoulder toward the visible
+        # ear/eye by ~half the head width (fighter is facing that way).
+        face_kp = ear_l or ear_r or eye_l or eye_r
+        cx = 0.5 * (sh_cx + face_kp[0])
+    else:
+        cx = sh_cx
+
+    half = head_h / 2.0
+    x1 = cx - half
+    x2 = cx + half
+    y1 = head_top_y
+    y2 = head_bottom_y
+    return (x1, y1, x2, y2)
+
+
+def _stomach_zone(kps):
+    """
+    Opponent's legal body target: square box from belt up to nipple line,
+    roughly torso-width. Returns (x1, y1, x2, y2) in normalized coords, or
+    None if shoulders/hips are not both confidently visible.
+
+    Construction:
+      top    = shoulder_y + STOMACH_TOP_FRAC × (hip_y − shoulder_y)
+      bottom = hip_y
+      cx     = midpoint of shoulders in x
+      width  = |shoulder_L − shoulder_R|
+      height = max(bottom − top, width)  → squared
+    """
+    sh_l = _kp(kps, KP_SHOULDER_L)
+    sh_r = _kp(kps, KP_SHOULDER_R)
+    hp_l = _kp(kps, KP_HIP_L)
+    hp_r = _kp(kps, KP_HIP_R)
+    if sh_l is None or sh_r is None or hp_l is None or hp_r is None:
+        return None
+
+    sh_y  = 0.5 * (sh_l[1] + sh_r[1])
+    hip_y = 0.5 * (hp_l[1] + hp_r[1])
+    if hip_y <= sh_y:
+        return None   # degenerate pose (upside-down / bad keypoints)
+
+    torso_height = hip_y - sh_y
+    top    = sh_y + STOMACH_TOP_FRAC * torso_height
+    bottom = hip_y
+    cx     = 0.5 * (0.5 * (sh_l[0] + sh_r[0]) + 0.5 * (hp_l[0] + hp_r[0]))
+    width  = max(abs(sh_l[0] - sh_r[0]), abs(hp_l[0] - hp_r[0]))
+    if width < 0.02:
+        return None   # fighter almost edge-on; box would be unreliable
+
+    # Square it to max(width, belt-to-nipples height).
+    side = max(bottom - top, width)
+    half = side / 2.0
+    # Center vertically between top & bottom.
+    cy = 0.5 * (top + bottom)
+    x1 = cx - half
+    x2 = cx + half
+    y1 = cy - half
+    y2 = cy + half
+    return (x1, y1, x2, y2)
+
+
+def _pt_in_box(pt, box, pad=0.0):
+    """pt and box in same coord system; pad dilates the box on all sides."""
+    if pt is None or box is None:
+        return False
+    x, y = pt
+    x1, y1, x2, y2 = box
+    return (x1 - pad) <= x <= (x2 + pad) and (y1 - pad) <= y <= (y2 + pad)
+
+
+def _glove_tip(wrist, elbow):
+    """
+    Extrapolate glove tip ≈ wrist + HIT_GLOVE_EXT_NORM × (wrist − elbow).
+    Falls back to the raw wrist if elbow is missing.
+    """
+    if wrist is None:
+        return None
+    if elbow is None:
+        return wrist
+    dx = wrist[0] - elbow[0]
+    dy = wrist[1] - elbow[1]
+    return (wrist[0] + HIT_GLOVE_EXT_NORM * dx,
+            wrist[1] + HIT_GLOVE_EXT_NORM * dy)
+
+
+def _verdict_at_peak(attacker_kps, target_kps):
+    """
+    Classify a punch peak as landed_head / landed_body / missed / unknown.
+
+    UNKNOWN:  opponent has no shoulders visible (can't compute either zone)
+              OR attacker has no active wrist we can identify.
+    LANDED_*: the ACTIVELY PUNCHING glove (the more-extended of the two
+              wrists, measured from shoulder center normalized by torso
+              height) sits inside the opponent's head or stomach zone, with
+              a glove-radius pad.
+    MISSED:   zones computable, active glove outside both zones — covers
+              overshoots, stop-shorts, and wide/hook misses.
+
+    Critically we check ONLY the active wrist, never the guard wrist. At a
+    punch peak, one hand is extended toward the opponent and the other is
+    up near the face guarding. Testing the guard wrist creates false
+    positives when its glove extrapolation coincidentally lands inside an
+    opponent zone (guard wrist points "up" and can project into the head
+    zone of an opponent who happens to be at the right relative position).
+    """
+    head = _head_zone(target_kps)
+    stom = _stomach_zone(target_kps)
+    if head is None and stom is None:
+        return ("unknown", None)
+
+    sc = _shoulder_center(attacker_kps)
+    th = _torso_height(attacker_kps)
+    if sc is None or th is None or th <= 1e-6:
+        return ("unknown", None)
+
+    # Identify the active (punching) wrist by extension-from-shoulder,
+    # normalized by torso height. The guard wrist sits near the face, so its
+    # shoulder-distance is small; the punching wrist is extended and reads
+    # a larger ratio.
+    best_wrist = None
+    best_elbow = None
+    best_ext   = -1.0
+    for wi, ei in ((KP_WRIST_L, KP_ELBOW_L), (KP_WRIST_R, KP_ELBOW_R)):
+        w = _kp(attacker_kps, wi)
+        if w is None:
+            continue
+        ratio = _dist(w, sc) / th
+        if ratio > best_ext:
+            best_ext = ratio
+            best_wrist = w
+            best_elbow = _kp(attacker_kps, ei)
+
+    if best_wrist is None:
+        return ("unknown", None)
+
+    # Sanity-gate: if no wrist is even meaningfully extended, treat as
+    # unknown (peak detector signal + partial occlusion). This prevents
+    # rare low-score peaks with both wrists in guard from being classified.
+    if best_ext < 0.35:
+        return ("unknown", None)
+
+    glove = _glove_tip(best_wrist, best_elbow)
+
+    if _pt_in_box(glove, head, pad=HIT_WRIST_PAD_NORM):
+        return ("landed_head", glove)
+    if _pt_in_box(glove, stom, pad=HIT_WRIST_PAD_NORM):
+        return ("landed_body", glove)
+    return ("missed", glove)
 
 
 def _punch_score(kps, prev_kps, toward_dir):
@@ -716,6 +960,45 @@ def compute(session_dir: Path) -> dict:
     my_punches_total = len(my_peaks)
     op_punches_total = len(op_peaks)
 
+    # ── Landed-hit verdict per peak ───────────────────────────────────────
+    # At each peak frame, classify the punch as landed_head / landed_body /
+    # missed / unknown against the opponent's head & stomach zones. Events
+    # are emitted in normalized coords so diagnostics can draw them directly.
+    def _events_for(peaks, attacker_key, target_key):
+        out = []
+        for pi in peaks:
+            f = frames[pi]
+            att = f.get(attacker_key)
+            tgt = f.get(target_key)
+            verdict, wrist = _verdict_at_peak(att, tgt)
+            head_box = _head_zone(tgt) if tgt else None
+            stom_box = _stomach_zone(tgt) if tgt else None
+            out.append({
+                "fi":       pi,
+                "t":        float(f.get("time_s", pi / fps_pose)),
+                "verdict":  verdict,   # landed_head | landed_body | missed | unknown
+                "wrist":    list(wrist) if wrist is not None else None,
+                "head_box": list(head_box) if head_box else None,
+                "stom_box": list(stom_box) if stom_box else None,
+            })
+        return out
+
+    my_events = _events_for(my_peaks, "my_kps", "op_kps")
+    op_events = _events_for(op_peaks, "op_kps", "my_kps")
+
+    def _tally(events):
+        landed_head = sum(1 for e in events if e["verdict"] == "landed_head")
+        landed_body = sum(1 for e in events if e["verdict"] == "landed_body")
+        missed      = sum(1 for e in events if e["verdict"] == "missed")
+        unknown     = sum(1 for e in events if e["verdict"] == "unknown")
+        decisive    = landed_head + landed_body + missed     # excludes unknown
+        accuracy    = round(100 * (landed_head + landed_body) / max(decisive, 1)) \
+                      if decisive > 0 else None
+        return landed_head, landed_body, missed, unknown, accuracy
+
+    (my_lh, my_lb, my_miss, my_unk, my_acc) = _tally(my_events)
+    (op_lh, op_lb, op_miss, op_unk, op_acc) = _tally(op_events)
+
     return {
         "ok":              True,
         "duration_s":      duration_s,
@@ -737,6 +1020,22 @@ def compute(session_dir: Path) -> dict:
         "op_guard":        op_guard,
         "my_punches":      my_punches_total,
         "op_punches":      op_punches_total,
+
+        # Phase 1 landed-hit gating.
+        "my_landed_head":  my_lh,
+        "my_landed_body":  my_lb,
+        "my_missed":       my_miss,
+        "my_unknown":      my_unk,
+        "my_accuracy":     my_acc,    # None if 0 decisive punches
+        "op_landed_head":  op_lh,
+        "op_landed_body":  op_lb,
+        "op_missed":       op_miss,
+        "op_unknown":      op_unk,
+        "op_accuracy":     op_acc,
+
+        "my_landed_events": my_events,   # [{fi,t,verdict,wrist,head_box,stom_box}]
+        "op_landed_events": op_events,
+
         "series": {
             "my_ring":       my_ring_sec,
             "op_ring":       op_ring_sec,

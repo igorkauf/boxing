@@ -366,13 +366,18 @@ def render_arena_heatmap(video_path: str, arena: dict, out_dir: Path) -> int:
     return 1
 
 
-# ── Baseline (boxes + skeleton) screenshots ──────────────────────────────────
+# ── Baseline (boxes + target zones) screenshots ──────────────────────────────
+COL_ZONE_OK  = (80,  200,  80)     # green, BGR
+COL_ZONE_HIT = (50,   50, 255)     # red,   BGR
+
+
 def render_baseline(video_path: str, enriched: dict, out_dir: Path,
-                    n: int = 12) -> int:
+                    n: int = 12, arena_metrics: dict | None = None) -> int:
     """
-    Pick n evenly-spaced enriched frames, draw fighter boxes + pose skeletons
-    + clinch badge, and save as PNGs. Coords in enriched are normalized [0, 1];
-    they get scaled by the compressed video's intrinsic dimensions here.
+    Pick n evenly-spaced enriched frames, draw fighter boxes + head/stomach
+    target zones (green; red around a landed-hit frame) + clinch badge, and
+    save as PNGs. Skeletons removed per landed-hit visualization plan — the
+    zones are the signal the user actually needs to eyeball.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in out_dir.glob("*.png"):
@@ -389,6 +394,25 @@ def render_baseline(video_path: str, enriched: dict, out_dir: Path,
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # Lazy import to avoid metrics ↔ screenshots circularity in tests.
+    import metrics as _metrics
+
+    # Precompute the set of (frame_idx, fighter_prefix, zone_name) that should
+    # be drawn red (landed-hit flash window).
+    red_on: dict[tuple[int, str, str], bool] = {}
+    if arena_metrics:
+        red_window = _metrics.LANDED_HIT_RED_FRAMES
+        def _add_red(events, target_pfx):
+            for ev in events:
+                fi = ev["fi"]
+                v  = ev["verdict"]
+                zone = "head" if v == "landed_head" else ("stom" if v == "landed_body" else None)
+                if zone is None: continue
+                for j in range(fi - red_window // 2, fi + red_window // 2 + 1):
+                    red_on[(j, target_pfx, zone)] = True
+        _add_red(arena_metrics.get("my_landed_events", []), "op")
+        _add_red(arena_metrics.get("op_landed_events", []), "my")
 
     # Evenly-spaced indices across the enriched frame list.
     if len(frames) <= n:
@@ -409,10 +433,23 @@ def render_baseline(video_path: str, enriched: dict, out_dir: Path,
             if bbox is not None:
                 px_bbox = [bbox[0] * W, bbox[1] * H, bbox[2] * W, bbox[3] * H]
                 _draw_box(frame, px_bbox, color, label=label)
+
+            # Target zones in pixel coords.
             kps = f.get(f"{pfx}_kps")
-            if kps:
-                kps_px = [[k[0] * W, k[1] * H, k[2]] if k else None for k in kps]
-                _draw_skeleton(frame, kps_px, color)
+            if not kps:
+                continue
+            head = _metrics._head_zone(kps)
+            stom = _metrics._stomach_zone(kps)
+            if head is not None:
+                col = COL_ZONE_HIT if red_on.get((idx, pfx, "head")) else COL_ZONE_OK
+                _draw_box(frame,
+                          [head[0] * W, head[1] * H, head[2] * W, head[3] * H],
+                          col)
+            if stom is not None:
+                col = COL_ZONE_HIT if red_on.get((idx, pfx, "stom")) else COL_ZONE_OK
+                _draw_box(frame,
+                          [stom[0] * W, stom[1] * H, stom[2] * W, stom[3] * H],
+                          col)
 
         if f.get("clinch"):
             _label(frame, "CLINCH", 16, 70, (0, 50, 220))
