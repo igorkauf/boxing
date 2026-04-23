@@ -2127,12 +2127,12 @@ def _run_sam2_subprocess(sid):
         drain_thread.start()
 
         try:
-            proc.wait(timeout=1800)
+            proc.wait(timeout=SAM2_TEST_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             proc.kill()
             drain_thread.join(timeout=5)
             meta["sam2_test_status"] = "error"
-            meta["sam2_test_error"]  = "Timed out after 30 min."
+            meta["sam2_test_error"]  = f"Timed out after {SAM2_TEST_TIMEOUT_S // 60} min."
             write_meta(sid, meta)
             return
 
@@ -2243,6 +2243,12 @@ def video(sid, kind):
 # ─── SAM2 diagnostic test ─────────────────────────────────────────────────────
 
 _SAM2_VIS_SCRIPT = BASE / "sam2_visualizer.py"
+
+# Per-clip SAM2 test timeout. Raised from 30 min → 2 h so slow laptops can
+# finish long clips without aborting. The test runs on a sampled subset
+# (stride-based) so even 3-round sparring clips should clear this budget;
+# anything that actually blows through 2 h is genuinely stuck, not slow.
+SAM2_TEST_TIMEOUT_S = 7200
 
 def _run_sam2_test(sid):
     """Background thread: run sam2_visualizer.py and store results in meta."""
@@ -2359,12 +2365,12 @@ def _run_sam2_test(sid):
         drain_thread.start()
 
         try:
-            proc.wait(timeout=1800)
+            proc.wait(timeout=SAM2_TEST_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             proc.kill()
             drain_thread.join(timeout=5)
             meta["sam2_test_status"] = "error"
-            meta["sam2_test_error"]  = "Timed out after 30 min."
+            meta["sam2_test_error"]  = f"Timed out after {SAM2_TEST_TIMEOUT_S // 60} min."
             write_meta(sid, meta)
             return
 
