@@ -301,6 +301,9 @@ def merge_landed_hits(bundle: dict,
     if not frames:
         return
     fps = float(enriched.get("fps_pose") or bundle.get("fps_pose") or 15.0)
+    fw = float(enriched.get("frame_w") or bundle.get("frame_w") or 1.0)
+    fh = float(enriched.get("frame_h") or bundle.get("frame_h") or 1.0)
+    aspect = (fw / fh) if fh > 0 else 1.0
     red_window = _metrics.LANDED_HIT_RED_FRAMES
 
     # Build per-frame sets of "target fighter zone(s) hit this frame".
@@ -342,8 +345,8 @@ def merge_landed_hits(bundle: dict,
             bb  = f.get(f"{pfx}_bbox")
             if not kps:
                 continue
-            head = _metrics._head_zone(kps, bb)
-            stom = _metrics._stomach_zone(kps)
+            head = _metrics._head_zone(kps, bb, aspect=aspect)
+            stom = _metrics._stomach_zone(kps, aspect=aspect)
             if head is not None:
                 color = COL_ZONE_HIT if fi in red_on[(pfx, "head")] else COL_ZONE_OK
                 items.append({

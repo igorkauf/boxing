@@ -394,6 +394,7 @@ def render_baseline(video_path: str, enriched: dict, out_dir: Path,
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    aspect = (W / H) if H > 0 else 1.0
 
     # Lazy import to avoid metrics ↔ screenshots circularity in tests.
     import metrics as _metrics
@@ -438,8 +439,8 @@ def render_baseline(video_path: str, enriched: dict, out_dir: Path,
             kps = f.get(f"{pfx}_kps")
             if not kps:
                 continue
-            head = _metrics._head_zone(kps, bbox)
-            stom = _metrics._stomach_zone(kps)
+            head = _metrics._head_zone(kps, bbox, aspect=aspect)
+            stom = _metrics._stomach_zone(kps, aspect=aspect)
             if head is not None:
                 col = COL_ZONE_HIT if red_on.get((idx, pfx, "head")) else COL_ZONE_OK
                 _draw_box(frame,
@@ -503,6 +504,7 @@ def render_punch_peaks(video_path: str, enriched: dict, arena_metrics: dict,
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    aspect = (W / H) if H > 0 else 1.0
 
     import metrics as _metrics
 
@@ -537,8 +539,8 @@ def render_punch_peaks(video_path: str, enriched: dict, arena_metrics: dict,
             kps = f.get(f"{pfx}_kps")
             if not kps:
                 continue
-            head = _metrics._head_zone(kps, bbox)
-            stom = _metrics._stomach_zone(kps)
+            head = _metrics._head_zone(kps, bbox, aspect=aspect)
+            stom = _metrics._stomach_zone(kps, aspect=aspect)
             # Red flashes land on the TARGET's zones.
             is_target = (pfx == target)
             head_hit  = is_target and verdict == "landed_head"

@@ -341,25 +341,26 @@ def _bbox_center_norm(bbox):
 
 
 # ── Landed-hit zones ─────────────────────────────────────────────────────────
-def _head_zone(kps, bbox=None):
+def _head_zone(kps, bbox=None, aspect=1.0):
     """
-    Opponent's legal head target: square, chin-to-top-of-bbox.
+    Opponent's legal head target: VISUALLY square (correct for frame aspect),
+    from top of bbox down to chin (just above shoulder line).
 
-      head_top    = bbox top (the detector already found the crown of the
-                    helmet; no need to estimate it from pose).
-      head_bottom = chin ≈ shoulder level minus a thin 10% of
-                    (shoulder − bbox_top) distance (chin sits just above
-                    the shoulder line, not on it).
-      width       = height (square, because helmets make the head roughly
-                    as wide as it is tall).
-      cx          = nose / ear / eye-midpoint, clamped inside the bbox to
-                    prevent the box from drifting off the fighter on
-                    partial keypoints; falls back to bbox-center-x.
+      head_top    = bbox top (YOLO already found the helmet crown)
+      head_bottom = chin ≈ shoulder_y − 10% × (shoulder_y − crown_y)
+      height      = chin − top        (in normalized coords)
+      width       = height × (1 / aspect)   ← key fix
+                    where aspect = frame_w / frame_h.
+                    Without this, a 1280×720 frame makes any
+                    "width_norm = height_norm" box 1.78× wider than tall
+                    in actual pixels — the visual "too wide" complaint
+                    in user feedback.
 
-    Returns (x1, y1, x2, y2) in normalized coords, or None when:
-      • shoulders aren't visible on this fighter (can't locate chin), OR
-      • bbox is missing (can't locate crown).
-    In those cases the verdict becomes UNKNOWN — correct for heavy occlusion.
+    cx falls back nose → eye-mid → ear-mid → bbox-center, clamped inside
+    bbox so the square can't drift off the fighter.
+
+    Returns (x1, y1, x2, y2) in normalized coords, or None on heavy
+    occlusion (no shoulders or no bbox → UNKNOWN verdict).
     """
     if bbox is None:
         return None
@@ -379,16 +380,13 @@ def _head_zone(kps, bbox=None):
         sh_cy = sh[1]
 
     head_top_y    = by1                                 # crown of helmet
-    # Chin just above shoulders: 10% of (shoulder − crown) distance, clamped
-    # to at least 1% of bbox height so the box doesn't collapse when a
-    # fighter's shoulders look very close to their head (hunched forward).
     chin_gap      = max(0.01 * bbox_h, 0.10 * (sh_cy - head_top_y))
     head_bottom_y = sh_cy - chin_gap
     head_h        = head_bottom_y - head_top_y
     if head_h < 0.02:
         return None
 
-    # Lateral center: face keypoints if available, else bbox-center-x.
+    # Lateral center fallback chain.
     nose  = _kp(kps, KP_NOSE)
     eye_l = _kp(kps, KP_EYE_L)
     eye_r = _kp(kps, KP_EYE_R)
@@ -403,37 +401,35 @@ def _head_zone(kps, bbox=None):
     elif ear_l is not None and ear_r is not None:
         cx = 0.5 * (ear_l[0] + ear_r[0])
     elif nose is None and (ear_l or ear_r or eye_l or eye_r):
-        # One-sided profile — nudge from bbox-center toward the visible side.
         face_kp = ear_l or ear_r or eye_l or eye_r
         cx = 0.5 * (bbox_cx + face_kp[0])
     else:
         cx = bbox_cx
 
-    # Square the box: width = height, centered on cx, but clamp cx so the
-    # square can't slide past the bbox left/right edges.
-    half = head_h / 2.0
-    cx = max(bx1 + half, min(bx2 - half, cx))
-    x1 = cx - half
-    x2 = cx + half
+    # Aspect-corrected width so the box is a SQUARE IN PIXELS, not in
+    # normalized coords. On a 16:9 frame this makes the normalized width
+    # 0.56× the normalized height, yielding width_px == height_px.
+    width_norm = head_h / max(aspect, 1e-6)
+    half_w     = width_norm / 2.0
+    cx         = max(bx1 + half_w, min(bx2 - half_w, cx))
+    x1 = cx - half_w
+    x2 = cx + half_w
     return (x1, head_top_y, x2, head_bottom_y)
 
 
-def _stomach_zone(kps):
+def _stomach_zone(kps, aspect=1.0):
     """
-    Opponent's legal body target: square box from belt (hip line) up to
-    nipples (~25% down from shoulder to hip), width equal to height so the
-    box is tight against the torso and doesn't splay out past shoulder
-    joints (which include arm sockets, not abdominal width).
+    Opponent's legal body target: VISUALLY square (aspect-corrected),
+    nipples-to-belt, centered on body midline.
 
       top    = shoulder_y + STOMACH_TOP_FRAC × (hip_y − shoulder_y)
       bottom = hip_y
       height = bottom − top
-      width  = height                          ← square
-      cx     = midpoint between shoulder-center and hip-center (body midline)
+      width  = height × (1 / aspect)   ← visually square in pixels
+      cx     = midpoint of shoulder-center and hip-center (body axis)
 
-    Previously sized the width to shoulder-or-hip spacing, which produced
-    a box much wider than the actual stomach region (arms extend past the
-    core). Making width = height keeps the square tight on the abdomen.
+    Like _head_zone, aspect-corrects the width so a landscape frame
+    doesn't produce a box that's visually ~1.78× wider than tall.
 
     Returns None if shoulders or hips can't both be located.
     """
@@ -449,7 +445,7 @@ def _stomach_zone(kps):
     hp_cx = 0.5 * (hp_l[0] + hp_r[0])
     hip_y = 0.5 * (hp_l[1] + hp_r[1])
     if hip_y <= sh_y:
-        return None   # degenerate pose (upside-down / bad keypoints)
+        return None
 
     torso_h = hip_y - sh_y
     top     = sh_y + STOMACH_TOP_FRAC * torso_h
@@ -458,12 +454,11 @@ def _stomach_zone(kps):
     if height < 0.02:
         return None
 
-    # Horizontal center along the body midline (shoulder↔hip midpoint).
     cx = 0.5 * (sh_cx + hp_cx)
-
-    half = height / 2.0
-    x1 = cx - half
-    x2 = cx + half
+    width_norm = height / max(aspect, 1e-6)
+    half_w = width_norm / 2.0
+    x1 = cx - half_w
+    x2 = cx + half_w
     return (x1, top, x2, bottom)
 
 
@@ -491,7 +486,38 @@ def _glove_tip(wrist, elbow):
             wrist[1] + HIT_GLOVE_EXT_NORM * dy)
 
 
-def _verdict_at_peak(attacker_kps, target_kps, target_bbox=None):
+def _bbox_iou(a, b):
+    """IoU of two normalized bboxes (x1,y1,x2,y2). 0 if either is None."""
+    if a is None or b is None:
+        return 0.0
+    ix1 = max(a[0], b[0]); iy1 = max(a[1], b[1])
+    ix2 = min(a[2], b[2]); iy2 = min(a[3], b[3])
+    iw = max(0.0, ix2 - ix1); ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, (a[2] - a[0])) * max(0.0, (a[3] - a[1]))
+    area_b = max(0.0, (b[2] - b[0])) * max(0.0, (b[3] - b[1]))
+    union = area_a + area_b - inter
+    return inter / union if union > 1e-9 else 0.0
+
+
+# Minimum arm extension (wrist-from-shoulder / torso_height) for the
+# attacker's punching hand at the peak frame. 0.35 was too permissive —
+# let through defensive motions that happened to align with the opponent.
+# 0.50 requires a genuinely committed arm-out posture.
+LANDED_HIT_EXT_MIN   = 0.50
+
+# If the attacker's bbox and target's bbox overlap this much, we're in a
+# clinch/tangle — the glove-in-zone test is unreliable because 2D proximity
+# doesn't separate "glove inside target" from "bodies pressed together."
+# Mark the verdict UNKNOWN rather than risk a false positive.
+LANDED_HIT_CLINCH_IOU = 0.55
+
+
+def _verdict_at_peak(attacker_kps, target_kps,
+                     target_bbox=None, attacker_bbox=None,
+                     aspect=1.0):
     """
     Classify a punch peak as landed_head / landed_body / missed / unknown.
 
@@ -511,8 +537,13 @@ def _verdict_at_peak(attacker_kps, target_kps, target_bbox=None):
     opponent zone (guard wrist points "up" and can project into the head
     zone of an opponent who happens to be at the right relative position).
     """
-    head = _head_zone(target_kps, target_bbox)
-    stom = _stomach_zone(target_kps)
+    # Clinch guard: if the two bboxes overlap heavily, 2D glove-in-zone is
+    # unreliable (bodies pressed together). Mark UNKNOWN rather than guess.
+    if _bbox_iou(attacker_bbox, target_bbox) >= LANDED_HIT_CLINCH_IOU:
+        return ("unknown", None)
+
+    head = _head_zone(target_kps, target_bbox, aspect=aspect)
+    stom = _stomach_zone(target_kps, aspect=aspect)
     if head is None and stom is None:
         return ("unknown", None)
 
@@ -541,10 +572,11 @@ def _verdict_at_peak(attacker_kps, target_kps, target_bbox=None):
     if best_wrist is None:
         return ("unknown", None)
 
-    # Sanity-gate: if no wrist is even meaningfully extended, treat as
-    # unknown (peak detector signal + partial occlusion). This prevents
-    # rare low-score peaks with both wrists in guard from being classified.
-    if best_ext < 0.35:
+    # Commitment gate: the active arm must be clearly extended, not just
+    # raised in guard or drifting. 0.50 torso-heights away from shoulder
+    # center = a genuine reach toward the opponent; below that, call it
+    # UNKNOWN so we don't label a defensive/guard motion as a landed hit.
+    if best_ext < LANDED_HIT_EXT_MIN:
         return ("unknown", None)
 
     glove = _glove_tip(best_wrist, best_elbow)
@@ -964,28 +996,36 @@ def compute(session_dir: Path) -> dict:
     # At each peak frame, classify the punch as landed_head / landed_body /
     # missed / unknown against the opponent's head & stomach zones. Events
     # are emitted in normalized coords so diagnostics can draw them directly.
-    def _events_for(peaks, attacker_key, target_key, target_bbox_key):
+    # Frame aspect ratio so zones can be drawn visually-square in pixels.
+    aspect = (fw / fh) if (fw > 0 and fh > 0) else 1.0
+
+    def _events_for(peaks, attacker_key, target_key,
+                    attacker_bbox_key, target_bbox_key):
         out = []
         for pi in peaks:
             f = frames[pi]
-            att = f.get(attacker_key)
-            tgt = f.get(target_key)
+            att    = f.get(attacker_key)
+            tgt    = f.get(target_key)
+            att_bb = f.get(attacker_bbox_key)
             tgt_bb = f.get(target_bbox_key)
-            verdict, wrist = _verdict_at_peak(att, tgt, tgt_bb)
-            head_box = _head_zone(tgt, tgt_bb) if tgt else None
-            stom_box = _stomach_zone(tgt) if tgt else None
+            verdict, wrist = _verdict_at_peak(att, tgt,
+                                              target_bbox=tgt_bb,
+                                              attacker_bbox=att_bb,
+                                              aspect=aspect)
+            head_box = _head_zone(tgt, tgt_bb, aspect=aspect) if tgt else None
+            stom_box = _stomach_zone(tgt, aspect=aspect)       if tgt else None
             out.append({
                 "fi":       pi,
                 "t":        float(f.get("time_s", pi / fps_pose)),
-                "verdict":  verdict,   # landed_head | landed_body | missed | unknown
+                "verdict":  verdict,
                 "wrist":    list(wrist) if wrist is not None else None,
                 "head_box": list(head_box) if head_box else None,
                 "stom_box": list(stom_box) if stom_box else None,
             })
         return out
 
-    my_events = _events_for(my_peaks, "my_kps", "op_kps", "op_bbox")
-    op_events = _events_for(op_peaks, "op_kps", "my_kps", "my_bbox")
+    my_events = _events_for(my_peaks, "my_kps", "op_kps", "my_bbox", "op_bbox")
+    op_events = _events_for(op_peaks, "op_kps", "my_kps", "op_bbox", "my_bbox")
 
     def _tally(events):
         landed_head = sum(1 for e in events if e["verdict"] == "landed_head")
