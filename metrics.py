@@ -103,14 +103,30 @@ PUNCH_ACCEL_MIN     = 0.075   # body-relative wrist velocity per pose-frame.
 # PUNCH_PEAK_SEP_S between peaks. Each real punch produces one peak; slow
 # defensive motion produces low-amplitude signal that fails the threshold,
 # and motion away from the opponent gets suppressed by the direction factor.
-PUNCH_SCORE_MIN     = 0.050   # peak-score threshold. Calibrated against user-
-                              # provided ground-truth counts across 6 clips —
-                              # this value minimizes total absolute error with
-                              # torso-normalized velocity (see _punch_score).
+PUNCH_SCORE_MIN     = 0.060   # peak-score threshold. Re-calibrated under the
+                              # v3 punch_score formula (bbox-zoom-corrected
+                              # velocity + dir_floor=0.60). Minimizes total
+                              # absolute error vs ground-truth counts across
+                              # 7 clips with a 2.7× range of camera zoom
+                              # (fighter-height 0.26 → 0.70 of frame).
 PUNCH_PEAK_SEP_S    = 0.18    # min time between detected peaks (fast 1-2
                               # combos sit around 0.2 s apart)
 RANGE_TRIGGER_SCALE = 2.6     # "in range" = opponent-distance <= this × scale-px
 ADVANCE_EPS_SCALE   = 0.005   # min per-frame closing speed (in scales) to count
+
+# Punch-score v3 knobs (calibrated to cross-clip ground-truth).
+PUNCH_DIR_FLOOR      = 0.60   # floor for the direction_factor — hooks
+                              # (perpendicular to me→op axis) used to get
+                              # halved to 0.5; floor lets close-range curved
+                              # punches score on par with straights.
+PUNCH_BBOX_REF_H     = 0.55   # reference fighter-height (normalized).
+                              # Velocities on frames where the fighter is
+                              # smaller than this get scaled up so the score
+                              # distribution stays stable across camera-zoom
+                              # levels. Capped at 2× to avoid runaway.
+                              # Fighters LARGER than the reference get no
+                              # correction (their velocities are already
+                              # well-resolved by pixel count).
 
 # ── State classifier (Phase 2) ───────────────────────────────────────────────
 # Per-frame fighter-interaction state, used to blend per-state aggression
@@ -128,8 +144,19 @@ STATE_CLOSE             = "close"
 STATE_CLINCH            = "clinch"
 STATE_OCCLUSION         = "occlusion"
 STATE_CLINCH_IOU        = 0.40   # bbox overlap above this ⇒ CLINCH
-STATE_CLOSE_DIST_SCALES = 1.50   # inter-fighter distance (in median-scale
-                                 # units) below this (and not clinch) ⇒ CLOSE
+STATE_CLOSE_DIST_SCALES = 0.50   # inter-fighter distance (in median-scale
+                                 # units = fighter-heights) below this ⇒
+                                 # CLOSE. Calibrated against observed
+                                 # distributions across our clips:
+                                 #   <0.5 = genuine infighting (can't
+                                 #          extend, hooks/uppercuts only)
+                                 #   0.5-1.2 = jab/normal range (can reach
+                                 #          with committed extension)
+                                 #   >1.2 = out of range
+                                 # Previous 1.5 classified normal range as
+                                 # CLOSE, which downweighted punch_score
+                                 # and undercounted punches (clip 75ff0142:
+                                 # 7/10 detected vs 30/42 ground-truth).
 STATE_OCCL_KP_FRAC      = 0.40   # per-fighter keypoint-visibility fraction
                                  # below which we call it OCCLUSION
 STATE_DECAY_TAU_S       = 2.5    # exponential decay time constant during
@@ -638,25 +665,28 @@ def _verdict_at_peak(attacker_kps, target_kps,
     return ("missed", glove)
 
 
-def _punch_score(kps, prev_kps, toward_dir):
+def _punch_score(kps, prev_kps, toward_dir, bbox=None):
     """
-    Per-frame punch-likelihood score for one fighter.
+    Per-frame punch-likelihood score for one fighter (v3).
 
         score = max over both wrists of
-                  extension_ratio × wrist_velocity × direction_factor
+                  extension_ratio × zoom_adjusted_velocity × direction_factor
 
-    • extension_ratio: distance(wrist, shoulder-center) / torso_height.
-    • wrist_velocity: magnitude of body-relative wrist displacement since
-      the previous frame (shoulder motion subtracted so the fighter's own
-      footwork doesn't register as wrist velocity). Kept in normalized
-      [0,1] frame coords — NOT divided by torso_height. Empirically this
-      gives a more consistent distribution across clips than torso-
-      normalization, which amplified inter-clip score variance 3× by
-      dividing by a small, noisy quantity.
-    • direction_factor: how aligned the wrist velocity is with the vector
-      from this fighter to the opponent (1 = straight toward, 0 = straight
-      away, 0.5 = perpendicular or unknown). Defensive/retraction motion
-      has direction_factor near 0, driving the score low.
+    • extension_ratio — distance(wrist, shoulder-center) / torso_height.
+    • zoom_adjusted_velocity — body-relative wrist displacement (shoulder
+      motion subtracted), with a partial normalization that boosts
+      velocity on zoomed-out clips. If the fighter's bbox-height is below
+      PUNCH_BBOX_REF_H, multiply velocity by PUNCH_BBOX_REF_H/bbox_h
+      (capped at 2×). This keeps score distributions comparable across a
+      2.7× range of camera zoom. Fighters larger than the reference are
+      unchanged — their velocities are already well-resolved by pixels.
+      (Direct torso_height normalization was tried and rejected earlier —
+      it amplified noise by dividing by a small, jittery keypoint
+      distance. bbox-height is stable enough to divide by.)
+    • direction_factor — cos(angle) between velocity and me→op vector,
+      remapped to [PUNCH_DIR_FLOOR, 1]. Floor lets close-range hooks
+      (roughly perpendicular motion) score on par with straight punches
+      instead of being halved by the 0.5 midpoint remap.
 
     Returns 0.0 when required keypoints are missing.
     """
@@ -665,6 +695,16 @@ def _punch_score(kps, prev_kps, toward_dir):
     if sc is None or th is None or th <= 1e-6:
         return 0.0
     prev_sc = _shoulder_center(prev_kps) if prev_kps else None
+
+    # Zoom correction: on zoomed-out clips fighters occupy less pixel area
+    # so raw velocities compress. Scale velocity up (capped) when fighter
+    # bbox is smaller than the reference. No change for large fighters.
+    if bbox is not None:
+        bbox_h = max(bbox[3] - bbox[1], 0.10)
+        zoom_boost = (min(2.0, PUNCH_BBOX_REF_H / bbox_h)
+                      if bbox_h < PUNCH_BBOX_REF_H else 1.0)
+    else:
+        zoom_boost = 1.0
 
     if toward_dir is not None:
         tx, ty = toward_dir
@@ -680,23 +720,20 @@ def _punch_score(kps, prev_kps, toward_dir):
         pw = _kp(prev_kps, wi)
         if pw is None:
             continue
-        # Body-relative wrist displacement (subtract shoulder motion).
         cur_rel  = (w[0]  - sc[0],      w[1]  - sc[1])
         prev_rel = (pw[0] - prev_sc[0], pw[1] - prev_sc[1])
         vx = cur_rel[0] - prev_rel[0]
         vy = cur_rel[1] - prev_rel[1]
-        vmag = math.hypot(vx, vy)
+        vmag = math.hypot(vx, vy) * zoom_boost
         if vmag < 1e-6:
             continue
-        # Extension fraction (torso-normalized).
         ext = _dist(w, sc) / th
-        # Directional factor: cosine of angle between velocity and opponent
-        # direction, remapped to [0, 1].
         if tmag < 1e-6:
             dir_factor = 0.5
         else:
             cos_sim = (vx * tx + vy * ty) / (vmag * tmag)
-            dir_factor = max(0.0, min(1.0, (cos_sim + 1.0) / 2.0))
+            dir_factor = max(PUNCH_DIR_FLOOR,
+                             min(1.0, (cos_sim + 1.0) / 2.0))
         score = ext * vmag * dir_factor
         if score > best:
             best = score
@@ -908,8 +945,10 @@ def compute(session_dir: Path) -> dict:
         else:
             me_to_op = None
             op_to_me = None
-        my_punch_score[i] = _punch_score(my_kps, prev_my, me_to_op)
-        op_punch_score[i] = _punch_score(op_kps, prev_op, op_to_me)
+        my_punch_score[i] = _punch_score(my_kps, prev_my, me_to_op,
+                                         bbox=f.get("my_bbox"))
+        op_punch_score[i] = _punch_score(op_kps, prev_op, op_to_me,
+                                         bbox=f.get("op_bbox"))
         # Convert normalized keypoints to image pixels (head position used
         # only as a relative signal, not in arena coords).
         def _hp(kps):
