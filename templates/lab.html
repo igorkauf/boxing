@@ -580,12 +580,13 @@
       <!-- Swimlanes — one per metric. Each declares its arena-dependence so
            we can show a "body-relative" badge on Guard (not tier-affected). -->
       {% set metrics = [
-        ('ring',       'RING CONTROL',         'arena',   True),
-        ('aggression', 'EFFECTIVE AGGRESSION', 'mixed',   True),
-        ('movement',   'MOVEMENT',             'arena',   True),
-        ('volume',     'VOLUME',               'body',    False),
-        ('defense',    'DEFENSE',              'mixed',   True),
-        ('guard',      'GUARD',                'body',    False),
+        ('ring',          'RING CONTROL',         'arena',   True),
+        ('aggression',    'EFFECTIVE AGGRESSION', 'mixed',   True),
+        ('movement',      'MOVEMENT',             'arena',   True),
+        ('volume',        'VOLUME',               'body',    False),
+        ('defense',       'DEFENSE',              'mixed',   True),
+        ('head_movement', 'HEAD MOVEMENT',        'body',    False),
+        ('guard',         'GUARD',                'body',    False),
       ] %}
       {% for key, label, kind, tier_affected in metrics %}
       {% set my_val = am['my_' ~ key] %}
@@ -1854,8 +1855,9 @@
     mk('am-aggression-chart', series.my_aggression, series.op_aggression);
     mk('am-movement-chart',   series.my_movement,   series.op_movement);
     mk('am-volume-chart',     series.my_volume,     series.op_volume);
-    mk('am-defense-chart',    series.my_defense,    series.op_defense);
-    mk('am-guard-chart',      series.my_guard,      series.op_guard);
+    mk('am-defense-chart',       series.my_defense,       series.op_defense);
+    mk('am-head_movement-chart', series.my_head_movement, series.op_head_movement);
+    mk('am-guard-chart',         series.my_guard,         series.op_guard);
 
     // State timeline (Phase 2). Simple DIV-per-second color strip — no
     // Chart.js, just a row of colored blocks so the user can see at a

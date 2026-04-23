@@ -140,6 +140,28 @@ AGG_OPEN_W    = {"punch": 0.60, "close_retreat": 0.30, "op_retreat": 0.10}
 AGG_CLOSE_W   = {"wrist": 0.50, "punch": 0.30, "body_push": 0.20}
 AGG_CLINCH_W  = {"wrist": 0.60, "head_move": 0.20, "bbox_push": 0.20}
 
+# ── Defense (4-pillar, coach-structured) ────────────────────────────────────
+# Graded only during frames where the fighter is being ATTACKED (opponent's
+# punch peak neighborhood). Four pillars, weighted:
+#   distance  (40%) — was the opponent out of effective range?
+#   head_move (25%) — did the head move in response?
+#   guard     (25%) — were the hands up near the face?
+#   counter   (10%) — did the fighter actively engage (parry/counter)?
+# When a fighter isn't being attacked in a given second, their defense
+# quality defaults to a neutral 50 — "no data, no judgment." The per-second
+# share between ME and OP is computed from their qualities.
+DEF_W = {"distance": 0.40, "head_move": 0.25, "guard": 0.25, "counter": 0.10}
+DEF_ATTACK_WIN_PRE_F  = 2    # frames before opponent-peak to include
+DEF_ATTACK_WIN_POST_F = 6    # frames after peak (defensive response phase)
+# Distance thresholds (in median-scale units): punch reach ~1.3 scales,
+# safely out of range ~2.2. Linear ramp between these.
+DEF_DIST_NEAR = 1.3
+DEF_DIST_FAR  = 2.2
+# Normalization constants — same philosophy as the Phase 2 aggression
+# signals: scale each raw input to ~[0, 1] typical range.
+DEF_HEAD_NORM    = 0.02     # head-relative motion per frame (body coords)
+DEF_COUNTER_NORM = 0.04     # wrist_activity magnitude
+
 # Tier → arena-component weight (body-relative components always = 1.0).
 TIER_WEIGHT = {
     "high":   1.00,
@@ -1140,36 +1162,127 @@ def compute(session_dir: Path) -> dict:
             my_volume_sec[s] = round(100 * me_punches / tot)
             op_volume_sec[s] = 100 - my_volume_sec[s]
 
-    # ── Metric 4: Defense (mixed) ──────────────────────────────────────────
-    # Arena component: fraction of time opponent was OUT of effective range.
-    # Body component: head-position variance (proxy for head movement).
-    my_def_sec = [50] * duration_s
-    op_def_sec = [50] * duration_s
+    # Peak-detect on the directional score. Moved UP from post-summary
+    # because the new Defense metric needs the peak lists (to define "ME is
+    # under attack" windows). Peak counts themselves are reported in the
+    # summary at the bottom.
+    my_peaks = _detect_punch_peaks(my_punch_score, fps_pose)
+    op_peaks = _detect_punch_peaks(op_punch_score, fps_pose)
+
+    # ── Metric 4: Defense (4-pillar, coach-structured) ─────────────────────
+    # Graded on how the fighter responds when being ATTACKED by the opponent.
+    # Four pillars — distance (was OP out of reach?), head_move (did the head
+    # move?), guard (hands up?), counter (active parry/engage?). Weighted by
+    # DEF_W above. If a fighter isn't being attacked in a given second, their
+    # quality stays neutral (50) — "no data, no judgment."
+    #
+    # The "under attack" window runs from a few frames before the opponent's
+    # punch peak (so anticipatory defense counts) through several frames
+    # after (the response phase). Peaks come from my_peaks / op_peaks, which
+    # are the same lists the total-punch-count uses.
+    my_attacked = [False] * n
+    op_attacked = [False] * n
+    for pi in op_peaks:                                   # OP throws → ME defends
+        for j in range(pi - DEF_ATTACK_WIN_PRE_F,
+                       pi + DEF_ATTACK_WIN_POST_F + 1):
+            if 0 <= j < n: my_attacked[j] = True
+    for pi in my_peaks:                                   # ME throws → OP defends
+        for j in range(pi - DEF_ATTACK_WIN_PRE_F,
+                       pi + DEF_ATTACK_WIN_POST_F + 1):
+            if 0 <= j < n: op_attacked[j] = True
+
+    def _dist_pillar(d):
+        """Linear ramp: 0 at DEF_DIST_NEAR, 1 at DEF_DIST_FAR."""
+        if d is None:
+            return 0.0
+        x = (d - DEF_DIST_NEAR) / max(DEF_DIST_FAR - DEF_DIST_NEAR, 1e-6)
+        return max(0.0, min(1.0, x))
+
+    # Per-frame pillar values for each fighter (continuous, 0..1).
+    my_pillars = [None] * n
+    op_pillars = [None] * n
+    for i in range(n):
+        d = my_to_op[i] if i < len(my_to_op) else None
+        dist_val = _dist_pillar(d)
+        my_pillars[i] = (
+            dist_val,
+            _nrm(my_head_move[i], DEF_HEAD_NORM),
+            my_guard_px[i] if my_guard_px[i] is not None else 0.0,
+            _nrm(my_wrist_act[i], DEF_COUNTER_NORM),
+        )
+        op_pillars[i] = (
+            dist_val,      # distance is symmetric
+            _nrm(op_head_move[i], DEF_HEAD_NORM),
+            op_guard_px[i] if op_guard_px[i] is not None else 0.0,
+            _nrm(op_wrist_act[i], DEF_COUNTER_NORM),
+        )
+
+    def _def_score(pillars):
+        d, h, g, c = pillars
+        return (DEF_W["distance"]  * d +
+                DEF_W["head_move"] * h +
+                DEF_W["guard"]     * g +
+                DEF_W["counter"]   * c)
+
+    # Per-second qualities + pillar breakdowns (for later UI / deep analytics).
+    my_def_sec   = [50] * duration_s
+    op_def_sec   = [50] * duration_s
+    my_def_dist_sec  = [50] * duration_s     # pillar breakdowns 0-100
+    my_def_head_sec  = [50] * duration_s
+    my_def_guard_sec = [50] * duration_s
+    op_def_dist_sec  = [50] * duration_s
+    op_def_head_sec  = [50] * duration_s
+    op_def_guard_sec = [50] * duration_s
+
     for s in range(duration_s):
         idxs = by_sec.get(s, [])
         if not idxs:
             continue
-        out_of_range_me = sum(1 for i in idxs
-                              if my_to_op[i] is not None and my_to_op[i] > RANGE_TRIGGER_SCALE)
-        out_of_range_op = out_of_range_me   # symmetric distance
-        # Head-mobility variance within the second (body-relative).
-        my_heads = [my_head_img[i] for i in idxs if my_head_img[i] is not None]
-        op_heads = [op_head_img[i] for i in idxs if op_head_img[i] is not None]
-        def _var(pts):
-            if len(pts) < 2:
-                return 0.0
-            arr = np.array(pts, dtype=np.float32)
-            return float(arr.std(axis=0).mean()) / max(median_scale, 1.0)
-        me_mob = _var(my_heads)
-        op_mob = _var(op_heads)
-        # Score: out-of-range contributes when arena tier is good, mobility
-        # contributes at full weight regardless.
-        me = (out_of_range_me / max(len(idxs), 1)) * tier_weight + me_mob
-        op = (out_of_range_op / max(len(idxs), 1)) * tier_weight + op_mob
-        tot = me + op
+
+        me_att_idx = [i for i in idxs if my_attacked[i] and state[i] != STATE_OCCLUSION]
+        op_att_idx = [i for i in idxs if op_attacked[i] and state[i] != STATE_OCCLUSION]
+
+        # Quality 0..1 — average across attacked frames; 0.5 if not attacked.
+        my_q = (sum(_def_score(my_pillars[i]) for i in me_att_idx) / len(me_att_idx)
+                if me_att_idx else 0.5)
+        op_q = (sum(_def_score(op_pillars[i]) for i in op_att_idx) / len(op_att_idx)
+                if op_att_idx else 0.5)
+        tot = my_q + op_q
         if tot > 1e-6:
-            my_def_sec[s] = round(100 * me / tot)
+            my_def_sec[s] = round(100 * my_q / tot)
             op_def_sec[s] = 100 - my_def_sec[s]
+
+        # Pillar breakdowns (0-100 absolute quality), for drill-down UI later.
+        def _pillar_pct(idxs_att, pillar_getter):
+            if not idxs_att:
+                return 50
+            return round(100 * sum(pillar_getter(i) for i in idxs_att) / len(idxs_att))
+        my_def_dist_sec[s]  = _pillar_pct(me_att_idx, lambda i: my_pillars[i][0])
+        my_def_head_sec[s]  = _pillar_pct(me_att_idx, lambda i: my_pillars[i][1])
+        my_def_guard_sec[s] = _pillar_pct(me_att_idx, lambda i: my_pillars[i][2])
+        op_def_dist_sec[s]  = _pillar_pct(op_att_idx, lambda i: op_pillars[i][0])
+        op_def_head_sec[s]  = _pillar_pct(op_att_idx, lambda i: op_pillars[i][1])
+        op_def_guard_sec[s] = _pillar_pct(op_att_idx, lambda i: op_pillars[i][2])
+
+    # ── Metric 4b: Head Movement (body-relative, standalone Tier A) ─────────
+    # Body-relative head displacement magnitude, summed per second. "How much
+    # is each fighter moving their head in general" — a cheap proxy for
+    # slipping, rolling, feinting. Differs from the defense head_move pillar
+    # which is graded only during opponent-attack windows: this one is
+    # measured continuously. Tier A because the input (nose/ears) is one of
+    # the more reliable keypoint sets and it's fully body-relative.
+    my_head_mov_sec = [50] * duration_s
+    op_head_mov_sec = [50] * duration_s
+    for s in range(duration_s):
+        idxs = by_sec.get(s, [])
+        if not idxs:
+            continue
+        me_hm = sum(my_head_move[i] for i in idxs)
+        op_hm = sum(op_head_move[i] for i in idxs)
+        tot = me_hm + op_hm
+        if tot > 1e-6:
+            my_head_mov_sec[s] = round(100 * me_hm / tot)
+            op_head_mov_sec[s] = 100 - my_head_mov_sec[s]
 
     # ── Metric 5: Guard (body-relative, no tier weighting) ─────────────────
     my_guard_sec = [50] * duration_s
@@ -1206,12 +1319,12 @@ def compute(session_dir: Path) -> dict:
     op_volume    = _avg(op_volume_sec)
     my_def       = _apply_fighter_visibility(_avg(my_def_sec), my_vis)
     op_def       = _apply_fighter_visibility(_avg(op_def_sec), op_vis)
+    my_head_mov  = _avg(my_head_mov_sec)   # body-relative; standalone metric
+    op_head_mov  = _avg(op_head_mov_sec)
     my_guard     = _avg(my_guard_sec)   # body-relative, never downweighted
     op_guard     = _avg(op_guard_sec)
 
-    # Peak-detect on the directional score — one peak per real punch.
-    my_peaks = _detect_punch_peaks(my_punch_score, fps_pose)
-    op_peaks = _detect_punch_peaks(op_punch_score, fps_pose)
+    # my_peaks / op_peaks were computed above for the Defense metric.
     my_punches_total = len(my_peaks)
     op_punches_total = len(op_peaks)
 
@@ -1302,6 +1415,8 @@ def compute(session_dir: Path) -> dict:
         "op_volume":       op_volume,
         "my_defense":      my_def,
         "op_defense":      op_def,
+        "my_head_movement": my_head_mov,
+        "op_head_movement": op_head_mov,
         "my_guard":        my_guard,
         "op_guard":        op_guard,
         "my_punches":      my_punches_total,
@@ -1343,9 +1458,19 @@ def compute(session_dir: Path) -> dict:
             "op_volume":     op_volume_sec,
             "my_defense":    my_def_sec,
             "op_defense":    op_def_sec,
+            # Defense pillar breakdowns (0-100 absolute quality; null = no
+            # signal to grade that second because fighter wasn't attacked).
+            "my_def_distance": my_def_dist_sec,
+            "my_def_head":     my_def_head_sec,
+            "my_def_guard":    my_def_guard_sec,
+            "op_def_distance": op_def_dist_sec,
+            "op_def_head":     op_def_head_sec,
+            "op_def_guard":    op_def_guard_sec,
+            "my_head_movement": my_head_mov_sec,
+            "op_head_movement": op_head_mov_sec,
             "my_guard":      my_guard_sec,
             "op_guard":      op_guard_sec,
-            "state":         state_per_sec,     # Phase 2: per-second label
+            "state":         state_per_sec,
         },
     }
 

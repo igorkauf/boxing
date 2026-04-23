@@ -47,6 +47,7 @@ METRIC_FIELDS = [
     "my_movement", "op_movement",
     "my_volume", "op_volume",
     "my_defense", "op_defense",
+    "my_head_movement", "op_head_movement",
     "my_guard", "op_guard",
     "my_punches", "op_punches",
     # Landed-hit columns removed in Phase 2 alongside the UI removal; the
