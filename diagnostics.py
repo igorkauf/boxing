@@ -339,9 +339,10 @@ def merge_landed_hits(bundle: dict,
         items = []
         for pfx in ("my", "op"):
             kps = f.get(f"{pfx}_kps")
+            bb  = f.get(f"{pfx}_bbox")
             if not kps:
                 continue
-            head = _metrics._head_zone(kps)
+            head = _metrics._head_zone(kps, bb)
             stom = _metrics._stomach_zone(kps)
             if head is not None:
                 color = COL_ZONE_HIT if fi in red_on[(pfx, "head")] else COL_ZONE_OK

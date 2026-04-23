@@ -438,7 +438,7 @@ def render_baseline(video_path: str, enriched: dict, out_dir: Path,
             kps = f.get(f"{pfx}_kps")
             if not kps:
                 continue
-            head = _metrics._head_zone(kps)
+            head = _metrics._head_zone(kps, bbox)
             stom = _metrics._stomach_zone(kps)
             if head is not None:
                 col = COL_ZONE_HIT if red_on.get((idx, pfx, "head")) else COL_ZONE_OK
@@ -457,6 +457,145 @@ def render_baseline(video_path: str, enriched: dict, out_dir: Path,
                16, 36, (255, 255, 255))
 
         out_path = out_dir / f"baseline_{count:03d}_t{t:06.2f}.png"
+        cv2.imwrite(str(out_path), frame)
+        count += 1
+
+    cap.release()
+    return count
+
+
+# ── Punch peaks: one screenshot per landed-hit candidate ─────────────────────
+COL_GLOVE_TIP = (0, 255, 255)   # yellow — the attacker's active glove
+COL_WRIST     = (200, 200, 0)   # cyan-ish — the attacker's wrist kp
+
+
+def render_punch_peaks(video_path: str, enriched: dict, arena_metrics: dict,
+                       out_dir: Path) -> int:
+    """
+    Render one PNG per detected punch peak so the user can eyeball every
+    landed-hit verdict in order. Much better validation UX than trying to
+    catch red flashes in live video (flashes last ~5 frames at ~15 fps =
+    0.3s, nearly impossible to scrub to precisely).
+
+    Each image shows:
+      • Both fighters' boxes (ME orange, OP blue)
+      • Both fighters' target zones (head + stomach) — green by default,
+        RED on whichever zone this peak landed in
+      • The attacker's active-glove position (yellow circle) — so the user
+        can see exactly what the verdict considered as "the glove"
+      • Title bar with verdict, fighter, frame index, timestamp
+
+    Filenames are chronological so scrolling through them replays the
+    clip's exchanges in order.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old in out_dir.glob("*.png"):
+        try: old.unlink()
+        except OSError: pass
+
+    frames = enriched.get("frames") or []
+    if not frames or not arena_metrics:
+        return 0
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return 0
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
+    W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    import metrics as _metrics
+
+    # Flatten into one list keeping chronology.
+    events = []
+    for e in arena_metrics.get("my_landed_events", []):
+        events.append(("me", "op", e))   # ME attacks OP
+    for e in arena_metrics.get("op_landed_events", []):
+        events.append(("op", "my", e))
+    events.sort(key=lambda x: x[2].get("fi", 0))
+
+    count = 0
+    for seq, (attacker, target, ev) in enumerate(events):
+        fi = ev.get("fi")
+        if fi is None or fi >= len(frames):
+            continue
+        f = frames[fi]
+        t = float(f.get("time_s", fi / max(fps, 1.0)))
+        verdict = ev.get("verdict", "?")
+
+        frame = _grab_frame(cap, t, fps)
+        if frame is None:
+            continue
+
+        # Fighter boxes + target zones.
+        for pfx, color, label in (("my", COL_ME, "ME"), ("op", COL_OP, "OP")):
+            bbox = f.get(f"{pfx}_bbox")
+            if bbox is not None:
+                _draw_box(frame,
+                          [bbox[0] * W, bbox[1] * H, bbox[2] * W, bbox[3] * H],
+                          color, label=label)
+            kps = f.get(f"{pfx}_kps")
+            if not kps:
+                continue
+            head = _metrics._head_zone(kps, bbox)
+            stom = _metrics._stomach_zone(kps)
+            # Red flashes land on the TARGET's zones.
+            is_target = (pfx == target)
+            head_hit  = is_target and verdict == "landed_head"
+            stom_hit  = is_target and verdict == "landed_body"
+            if head is not None:
+                _draw_box(frame,
+                          [head[0] * W, head[1] * H, head[2] * W, head[3] * H],
+                          COL_ZONE_HIT if head_hit else COL_ZONE_OK)
+            if stom is not None:
+                _draw_box(frame,
+                          [stom[0] * W, stom[1] * H, stom[2] * W, stom[3] * H],
+                          COL_ZONE_HIT if stom_hit else COL_ZONE_OK)
+
+        # Attacker's active glove: recomputed using the same pick-the-
+        # most-extended-wrist logic as the verdict, so what you see is
+        # exactly what got tested.
+        akps = f.get(f"{attacker}_kps")
+        if akps:
+            sc = _metrics._shoulder_center(akps)
+            th = _metrics._torso_height(akps)
+            if sc and th and th > 1e-6:
+                best_w = None; best_e = None; best_r = -1.0
+                for wi, ei in ((_metrics.KP_WRIST_L, _metrics.KP_ELBOW_L),
+                               (_metrics.KP_WRIST_R, _metrics.KP_ELBOW_R)):
+                    w = _metrics._kp(akps, wi)
+                    if w is None: continue
+                    r = _metrics._dist(w, sc) / th
+                    if r > best_r:
+                        best_r = r
+                        best_w = w
+                        best_e = _metrics._kp(akps, ei)
+                if best_w is not None:
+                    cv2.circle(frame, (int(best_w[0] * W), int(best_w[1] * H)),
+                               5, COL_WRIST, 2, cv2.LINE_AA)
+                    gt = _metrics._glove_tip(best_w, best_e)
+                    if gt is not None:
+                        cv2.circle(frame,
+                                   (int(gt[0] * W), int(gt[1] * H)),
+                                   12, COL_GLOVE_TIP, 2, cv2.LINE_AA)
+
+        # Header with verdict + context.
+        attacker_lbl = attacker.upper()
+        header = (f"{attacker_lbl}  {verdict.upper()}  "
+                  f"fi={fi}  t={t:6.2f}s  "
+                  f"(seq {seq + 1}/{len(events)})")
+        text_color = {
+            "landed_head": (80, 200, 80),
+            "landed_body": (80, 200, 80),
+            "missed":      (0, 180, 255),
+            "unknown":     (170, 170, 170),
+        }.get(verdict, (255, 255, 255))
+        _label(frame, header, 16, 36, text_color)
+
+        # Filename: chronological + verdict + attacker so gallery scroll
+        # reads as a storyline.
+        out_path = out_dir / (
+            f"peak_{seq:03d}_t{t:07.2f}_{verdict}_{attacker}.png")
         cv2.imwrite(str(out_path), frame)
         count += 1
 

@@ -1,0 +1,9 @@
+session,filename,duration_s,tier,tier_weight,my_visibility,op_visibility,my_ring,op_ring,my_aggression,op_aggression,my_movement,op_movement,my_volume,op_volume,my_defense,op_defense,my_guard,op_guard,my_punches,op_punches,my_landed_head,op_landed_head,my_landed_body,op_landed_body,my_missed,op_missed,my_unknown,op_unknown,my_accuracy,op_accuracy,compute_ms
+3f94fa52,yellow.mov,18,high,1.0,0.863,0.753,54,46,48,52,52,48,46,54,53,47,48,46,11,8,0,0,3,0,7,8,1,0,30,0,14.3
+4e282a22,Video by criztianlaurente15.mp4,17,high,1.0,0.899,0.968,44,56,53,47,51,49,54,46,47,53,57,33,20,23,7,2,3,4,10,16,0,1,50,27,14.1
+4e983f1f,box_green.mov,46,high,1.0,0.978,0.879,51,49,56,44,54,46,60,40,52,48,50,46,25,21,0,4,2,4,9,12,14,1,18,40,51.5
+58d96cfe,box_gigguys.mov,47,high,1.0,0.961,0.918,41,59,54,46,49,51,66,34,45,55,40,57,30,12,4,2,7,2,13,8,6,0,46,33,56.1
+cc7be917,Video by overtimeboxing.mp4,24,high,1.0,1.0,1.0,31,69,47,53,61,39,40,60,58,42,60,58,24,27,4,7,0,1,19,19,1,0,17,30,24.5
+e4e58936,box_test.mov,94,high,1.0,0.886,0.696,49,51,52,48,57,44,57,43,60,41,49,55,46,35,2,2,12,9,21,22,11,2,40,33,92.6
+f5433363,Video by yoshikillznina.mp4,11,high,1.0,1.0,1.0,52,48,74,26,62,38,52,48,57,43,27,41,2,2,0,0,0,0,2,2,0,0,0,0,11.9
+f83c26c3,#boxing🥊 #noboxingnolife #sparringday🔥🥊 #fitness #fyp lil th.mp4,28,high,1.0,0.998,0.983,67,33,56,44,54,46,63,37,49,51,34,45,24,14,2,2,3,1,18,11,1,0,22,21,27.4

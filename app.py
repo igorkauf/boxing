@@ -1427,6 +1427,18 @@ def _run_pose_enrichment(sid):
                 print(f"[enrichment] wrote {n} baseline screenshots to {shots_dir}")
             except Exception as _e:
                 print(f"[enrichment] Baseline screenshots failed (non-fatal): {_e}")
+
+            # Punch-peak screenshots — one frame per landed-hit candidate so
+            # the user can eyeball every verdict in order. Much better UX than
+            # hunting for red flashes in live video.
+            if arena_metrics_result:
+                try:
+                    peaks_dir = sess_dir(sid) / "screenshots" / "punch_peaks"
+                    n = screenshots.render_punch_peaks(
+                        vpath, enriched, arena_metrics_result, peaks_dir)
+                    print(f"[enrichment] wrote {n} punch-peak screenshots to {peaks_dir}")
+                except Exception as _e:
+                    print(f"[enrichment] Punch-peak screenshots failed (non-fatal): {_e}")
         else:
             print(f"[enrichment] arena detection failed: {arena.get('error')}")
     except Exception as _e:

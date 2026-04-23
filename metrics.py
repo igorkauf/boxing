@@ -341,63 +341,60 @@ def _bbox_center_norm(bbox):
 
 
 # ── Landed-hit zones ─────────────────────────────────────────────────────────
-def _head_zone(kps):
+def _head_zone(kps, bbox=None):
     """
-    Opponent's legal head target: square, chin-to-crown, helmet-sized.
-    Returns (x1, y1, x2, y2) in normalized coords, or None if keypoints
-    insufficient (occlusion → verdict becomes UNKNOWN).
+    Opponent's legal head target: square, chin-to-top-of-bbox.
 
-    Construction strategy — robust to profile views where only one eye/ear
-    is confident. Anchored on SHOULDERS (almost always visible) for sizing,
-    with facial keypoints used only for precise x-centering:
+      head_top    = bbox top (the detector already found the crown of the
+                    helmet; no need to estimate it from pose).
+      head_bottom = chin ≈ shoulder level minus a thin 10% of
+                    (shoulder − bbox_top) distance (chin sits just above
+                    the shoulder line, not on it).
+      width       = height (square, because helmets make the head roughly
+                    as wide as it is tall).
+      cx          = nose / ear / eye-midpoint, clamped inside the bbox to
+                    prevent the box from drifting off the fighter on
+                    partial keypoints; falls back to bbox-center-x.
 
-      torso_h       = dist(shoulder_center, hip_center)  [or shoulder_spacing if hips missing]
-      head_h        = 0.30 × torso_h     (helmet-sized, a bit larger than face)
-      head_bottom_y = shoulder_center_y − 0.04 × torso_h   (just above shoulder line)
-      head_top_y    = head_bottom_y − head_h
-      cx            = nose / one-ear / eye-midpoint / shoulder-midpoint (fallback chain)
-      width = height (square)
-
-    Returns None only when we have no shoulder reference AT ALL — in that
-    case the verdict becomes UNKNOWN, which is what we want for heavy
-    occlusion.
+    Returns (x1, y1, x2, y2) in normalized coords, or None when:
+      • shoulders aren't visible on this fighter (can't locate chin), OR
+      • bbox is missing (can't locate crown).
+    In those cases the verdict becomes UNKNOWN — correct for heavy occlusion.
     """
+    if bbox is None:
+        return None
+    bx1, by1, bx2, by2 = bbox
+    bbox_h = by2 - by1
+    if bbox_h < 0.04:
+        return None
+
     sh_l = _kp(kps, KP_SHOULDER_L)
     sh_r = _kp(kps, KP_SHOULDER_R)
     if sh_l is None and sh_r is None:
         return None
     if sh_l is not None and sh_r is not None:
-        sh_cx = 0.5 * (sh_l[0] + sh_r[0])
         sh_cy = 0.5 * (sh_l[1] + sh_r[1])
-        sh_spacing = abs(sh_l[0] - sh_r[0])
     else:
         sh = sh_l or sh_r
-        sh_cx, sh_cy = sh[0], sh[1]
-        sh_spacing = 0.05   # profile view fallback
+        sh_cy = sh[1]
 
-    hp_l = _kp(kps, KP_HIP_L)
-    hp_r = _kp(kps, KP_HIP_R)
-    hip_mid = _midpoint(hp_l, hp_r)
-    if hip_mid is not None:
-        torso_h = abs(hip_mid[1] - sh_cy)
-    else:
-        # Estimate torso height from shoulder spacing. Boxer torso is roughly
-        # 2× shoulder spacing tall.
-        torso_h = 2.0 * sh_spacing
-
-    if torso_h < 0.04:       # degenerate / tiny figure
+    head_top_y    = by1                                 # crown of helmet
+    # Chin just above shoulders: 10% of (shoulder − crown) distance, clamped
+    # to at least 1% of bbox height so the box doesn't collapse when a
+    # fighter's shoulders look very close to their head (hunched forward).
+    chin_gap      = max(0.01 * bbox_h, 0.10 * (sh_cy - head_top_y))
+    head_bottom_y = sh_cy - chin_gap
+    head_h        = head_bottom_y - head_top_y
+    if head_h < 0.02:
         return None
 
-    head_h        = 0.30 * torso_h
-    head_bottom_y = sh_cy  - 0.04 * torso_h
-    head_top_y    = head_bottom_y - head_h
-
-    # Lateral center: prefer facial keypoints, fall back to shoulder center.
+    # Lateral center: face keypoints if available, else bbox-center-x.
     nose  = _kp(kps, KP_NOSE)
     eye_l = _kp(kps, KP_EYE_L)
     eye_r = _kp(kps, KP_EYE_R)
     ear_l = _kp(kps, KP_EAR_L)
     ear_r = _kp(kps, KP_EAR_R)
+    bbox_cx = 0.5 * (bx1 + bx2)
 
     if nose is not None:
         cx = nose[0]
@@ -405,35 +402,40 @@ def _head_zone(kps):
         cx = 0.5 * (eye_l[0] + eye_r[0])
     elif ear_l is not None and ear_r is not None:
         cx = 0.5 * (ear_l[0] + ear_r[0])
-    elif ear_l is not None or ear_r is not None or \
-         eye_l is not None or eye_r is not None:
-        # One-sided profile: head is offset from shoulder toward the visible
-        # ear/eye by ~half the head width (fighter is facing that way).
+    elif nose is None and (ear_l or ear_r or eye_l or eye_r):
+        # One-sided profile — nudge from bbox-center toward the visible side.
         face_kp = ear_l or ear_r or eye_l or eye_r
-        cx = 0.5 * (sh_cx + face_kp[0])
+        cx = 0.5 * (bbox_cx + face_kp[0])
     else:
-        cx = sh_cx
+        cx = bbox_cx
 
+    # Square the box: width = height, centered on cx, but clamp cx so the
+    # square can't slide past the bbox left/right edges.
     half = head_h / 2.0
+    cx = max(bx1 + half, min(bx2 - half, cx))
     x1 = cx - half
     x2 = cx + half
-    y1 = head_top_y
-    y2 = head_bottom_y
-    return (x1, y1, x2, y2)
+    return (x1, head_top_y, x2, head_bottom_y)
 
 
 def _stomach_zone(kps):
     """
-    Opponent's legal body target: square box from belt up to nipple line,
-    roughly torso-width. Returns (x1, y1, x2, y2) in normalized coords, or
-    None if shoulders/hips are not both confidently visible.
+    Opponent's legal body target: square box from belt (hip line) up to
+    nipples (~25% down from shoulder to hip), width equal to height so the
+    box is tight against the torso and doesn't splay out past shoulder
+    joints (which include arm sockets, not abdominal width).
 
-    Construction:
       top    = shoulder_y + STOMACH_TOP_FRAC × (hip_y − shoulder_y)
       bottom = hip_y
-      cx     = midpoint of shoulders in x
-      width  = |shoulder_L − shoulder_R|
-      height = max(bottom − top, width)  → squared
+      height = bottom − top
+      width  = height                          ← square
+      cx     = midpoint between shoulder-center and hip-center (body midline)
+
+    Previously sized the width to shoulder-or-hip spacing, which produced
+    a box much wider than the actual stomach region (arms extend past the
+    core). Making width = height keeps the square tight on the abdomen.
+
+    Returns None if shoulders or hips can't both be located.
     """
     sh_l = _kp(kps, KP_SHOULDER_L)
     sh_r = _kp(kps, KP_SHOULDER_R)
@@ -442,29 +444,27 @@ def _stomach_zone(kps):
     if sh_l is None or sh_r is None or hp_l is None or hp_r is None:
         return None
 
+    sh_cx = 0.5 * (sh_l[0] + sh_r[0])
     sh_y  = 0.5 * (sh_l[1] + sh_r[1])
+    hp_cx = 0.5 * (hp_l[0] + hp_r[0])
     hip_y = 0.5 * (hp_l[1] + hp_r[1])
     if hip_y <= sh_y:
         return None   # degenerate pose (upside-down / bad keypoints)
 
-    torso_height = hip_y - sh_y
-    top    = sh_y + STOMACH_TOP_FRAC * torso_height
-    bottom = hip_y
-    cx     = 0.5 * (0.5 * (sh_l[0] + sh_r[0]) + 0.5 * (hp_l[0] + hp_r[0]))
-    width  = max(abs(sh_l[0] - sh_r[0]), abs(hp_l[0] - hp_r[0]))
-    if width < 0.02:
-        return None   # fighter almost edge-on; box would be unreliable
+    torso_h = hip_y - sh_y
+    top     = sh_y + STOMACH_TOP_FRAC * torso_h
+    bottom  = hip_y
+    height  = bottom - top
+    if height < 0.02:
+        return None
 
-    # Square it to max(width, belt-to-nipples height).
-    side = max(bottom - top, width)
-    half = side / 2.0
-    # Center vertically between top & bottom.
-    cy = 0.5 * (top + bottom)
+    # Horizontal center along the body midline (shoulder↔hip midpoint).
+    cx = 0.5 * (sh_cx + hp_cx)
+
+    half = height / 2.0
     x1 = cx - half
     x2 = cx + half
-    y1 = cy - half
-    y2 = cy + half
-    return (x1, y1, x2, y2)
+    return (x1, top, x2, bottom)
 
 
 def _pt_in_box(pt, box, pad=0.0):
@@ -491,7 +491,7 @@ def _glove_tip(wrist, elbow):
             wrist[1] + HIT_GLOVE_EXT_NORM * dy)
 
 
-def _verdict_at_peak(attacker_kps, target_kps):
+def _verdict_at_peak(attacker_kps, target_kps, target_bbox=None):
     """
     Classify a punch peak as landed_head / landed_body / missed / unknown.
 
@@ -511,7 +511,7 @@ def _verdict_at_peak(attacker_kps, target_kps):
     opponent zone (guard wrist points "up" and can project into the head
     zone of an opponent who happens to be at the right relative position).
     """
-    head = _head_zone(target_kps)
+    head = _head_zone(target_kps, target_bbox)
     stom = _stomach_zone(target_kps)
     if head is None and stom is None:
         return ("unknown", None)
@@ -964,14 +964,15 @@ def compute(session_dir: Path) -> dict:
     # At each peak frame, classify the punch as landed_head / landed_body /
     # missed / unknown against the opponent's head & stomach zones. Events
     # are emitted in normalized coords so diagnostics can draw them directly.
-    def _events_for(peaks, attacker_key, target_key):
+    def _events_for(peaks, attacker_key, target_key, target_bbox_key):
         out = []
         for pi in peaks:
             f = frames[pi]
             att = f.get(attacker_key)
             tgt = f.get(target_key)
-            verdict, wrist = _verdict_at_peak(att, tgt)
-            head_box = _head_zone(tgt) if tgt else None
+            tgt_bb = f.get(target_bbox_key)
+            verdict, wrist = _verdict_at_peak(att, tgt, tgt_bb)
+            head_box = _head_zone(tgt, tgt_bb) if tgt else None
             stom_box = _stomach_zone(tgt) if tgt else None
             out.append({
                 "fi":       pi,
@@ -983,8 +984,8 @@ def compute(session_dir: Path) -> dict:
             })
         return out
 
-    my_events = _events_for(my_peaks, "my_kps", "op_kps")
-    op_events = _events_for(op_peaks, "op_kps", "my_kps")
+    my_events = _events_for(my_peaks, "my_kps", "op_kps", "op_bbox")
+    op_events = _events_for(op_peaks, "op_kps", "my_kps", "my_bbox")
 
     def _tally(events):
         landed_head = sum(1 for e in events if e["verdict"] == "landed_head")
